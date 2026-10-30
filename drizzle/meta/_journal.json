@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1793077112475,
+      "tag": "0000_absent_ares",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1793078072653,
+      "tag": "0001_funny_legion",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793180000000,
+      "tag": "0002_marketplace_link",
+      "breakpoints": true
+    }
+  ]
+}
