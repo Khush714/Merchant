@@ -17,7 +17,9 @@ export const businessMarketplaceLinks = pgTable("business_marketplace_links", {
   accessTokenEncrypted: text("access_token_encrypted").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (table) => ({
+  uniqueMarketplaceRestaurant: uniqueIndex("unique_marketplace_restaurant_idx").on(table.marketplaceRestaurantId),
+}));
 
 export const sessions = pgTable("sessions", {
   tokenHash: text("token_hash").primaryKey(),
@@ -116,3 +118,4 @@ export const settlements = pgTable("settlements", {
   paidAt: timestamp("paid_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [index("settlements_business_idx").on(table.businessId, table.createdAt)]);
+
