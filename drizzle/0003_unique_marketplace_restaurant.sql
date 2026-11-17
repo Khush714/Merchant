@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "unique_marketplace_restaurant_idx" ON "business_marketplace_links" USING btree ("marketplace_restaurant_id");
