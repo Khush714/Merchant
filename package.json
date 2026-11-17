@@ -6,7 +6,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/integration-test.mjs"
   },
   "dependencies": {
     "baseline-browser-mapping": "^2.11.33",

@@ -50,4 +50,22 @@ Configure `MARKETPLACE_API_URL`, `MERCHANT_APP_INTEGRATION_SECRET`, and `MERCHAN
 
 ## Validation
 
-Run `npm run lint`, `npx next typegen`, `npm exec tsc -- --noEmit --pretty false`, and `npm run build`. The API integration smoke test in `scripts/integration-test.mjs` uses a running local preview and a disposable pair of test accounts; it uses `DATABASE_URL` for test approval/cleanup only and must never be run against a production database.
+Run `npm run typecheck`, `npm run lint` and `npm run build`.
+
+The API integration smoke test in `scripts/integration-test.mjs` covers order concurrency, API ingress limits, session policy and password change. It needs a running server and a **disposable local database**; the script refuses any `DATABASE_URL` whose host is not `127.0.0.1`, `localhost` or `::1`, and it deletes the records it creates.
+
+```bash
+# 1. Point DATABASE_URL at an empty local PostgreSQL database, then apply the schema in order.
+for file in drizzle/*.sql; do psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$file"; done
+
+# 2. Build and start the app with DATABASE_URL set (npm start runs a production build).
+npm run build
+npm start
+
+# 3. In another terminal, run the suite against it.
+npm test
+```
+
+Never run `npm test` against production: it registers accounts, places orders and edits sessions directly.
+
+Continuous integration runs on every push to `main` and every pull request (`.github/workflows/ci.yml`): route type generation, typecheck, lint, production build, the integration suite against a disposable PostgreSQL 17 service container, and a production-only dependency audit. No CI secrets are required; the workflow uses CI-only placeholder values.

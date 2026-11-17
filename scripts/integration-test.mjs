@@ -14,7 +14,15 @@ const testOrders = `select id from orders where business_id in (${shops})`;
 function sql(statement) { execFileSync("psql", [database, "-v", "ON_ERROR_STOP=1", "-q", "-c", statement], { stdio: "pipe" }); }
 function scalar(statement) { return execFileSync("psql", [database, "-v", "ON_ERROR_STOP=1", "-t", "-A", "-c", statement], { encoding: "utf8" }).trim(); }
 async function request(path, { method = "GET", cookie, body } = {}) {
-  const response = await fetch(`${base}${path}`, { method, headers: { ...(cookie ? { cookie } : {}), ...(body ? { "content-type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const send = () => fetch(`${base}${path}`, { method, headers: { ...(cookie ? { cookie } : {}), ...(body ? { "content-type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  let response = await send();
+  // The auth bucket allows a fixed number of requests per IP per minute. A repeated run started
+  // shortly after a previous one can trip it; wait for the window once instead of failing the run.
+  if (response.status === 429) {
+    console.warn("Rate limited; waiting 61s for the per-IP window to reset, then retrying once.");
+    await new Promise((resolve) => setTimeout(resolve, 61_000));
+    response = await send();
+  }
   const data = await response.json();
   return { status: response.status, data, cookie: response.headers.get("set-cookie")?.split(";")[0] };
 }
@@ -113,10 +121,10 @@ try {
   const earnings = await request("/api/merchant/overview", { cookie: restaurant.cookie }); assert.equal(earnings.data.overview.todaySales, 50000); assert.equal(earnings.data.overview.completedToday, 1); assert.equal(earnings.data.overview.settlements.length, 0);
   // Signing in again from another browser must not disturb the existing session, but signing in with a
   // token already in that browser must rotate it away.
-  const extraLogin = await request("/api/auth", { method: "POST", body: { email: emails[0], password: `T3st-${run}` } });
+  const extraLogin = await request("/api/auth", { method: "POST", body: { action: "login", email: emails[0], password: `T3st-${run}` } });
   assert.equal(extraLogin.status, 200); assert.ok(extraLogin.cookie); assert.notEqual(extraLogin.cookie, restaurant.cookie);
   assert.ok((await request("/api/auth", { cookie: restaurant.cookie })).data.user);
-  const rotated = await request("/api/auth", { method: "POST", cookie: restaurant.cookie, body: { email: emails[0], password: `T3st-${run}` } });
+  const rotated = await request("/api/auth", { method: "POST", cookie: restaurant.cookie, body: { action: "login", email: emails[0], password: `T3st-${run}` } });
   assert.equal(rotated.status, 200); assert.ok(rotated.cookie);
   assert.equal((await request("/api/auth", { cookie: restaurant.cookie })).data.user, null);
   assert.ok((await request("/api/auth", { cookie: rotated.cookie })).data.user);
@@ -128,7 +136,7 @@ try {
   const tokenHash = (token) => createHash("sha256").update(token).digest("hex");
   sql(`update sessions set expires_at = now() - interval '1 minute' where token_hash = '${tokenHash(vendor.cookie.split("=")[1])}'`);
   assert.equal((await request("/api/auth", { cookie: vendor.cookie })).data.user, null);
-  const vendorLogin = await request("/api/auth", { method: "POST", body: { email: emails[1], password: `T3st-${run}` } });
+  const vendorLogin = await request("/api/auth", { method: "POST", body: { action: "login", email: emails[1], password: `T3st-${run}` } });
   assert.equal(vendorLogin.status, 200); assert.ok(vendorLogin.cookie);
   const vendorToken = tokenHash(vendorLogin.cookie.split("=")[1]);
   sql(`update sessions set expires_at = now() + interval '10 days' where token_hash = '${vendorToken}'`);
@@ -138,15 +146,15 @@ try {
   assert.equal((await request("/api/auth", { cookie: vendorLogin.cookie })).data.user, null);
   // Changing a password requires the current one, rotates the session and revokes the other devices.
   const newPassword = `N3w-${run}`;
-  const passwordLogin = await request("/api/auth", { method: "POST", body: { email: emails[1], password: `T3st-${run}` } });
+  const passwordLogin = await request("/api/auth", { method: "POST", body: { action: "login", email: emails[1], password: `T3st-${run}` } });
   assert.equal(passwordLogin.status, 200); assert.ok(passwordLogin.cookie);
   assert.equal((await request("/api/auth", { method: "POST", cookie: passwordLogin.cookie, body: { action: "change-password", currentPassword: "wrong-password", newPassword } })).status, 403);
   const changed = await request("/api/auth", { method: "POST", cookie: passwordLogin.cookie, body: { action: "change-password", currentPassword: `T3st-${run}`, newPassword } });
   assert.equal(changed.status, 200); assert.ok(changed.cookie); assert.notEqual(changed.cookie, passwordLogin.cookie);
   assert.equal((await request("/api/auth", { cookie: passwordLogin.cookie })).data.user, null);
   assert.equal((await request("/api/auth", { cookie: changed.cookie })).data.user.email, emails[1]);
-  assert.equal((await request("/api/auth", { method: "POST", body: { email: emails[1], password: `T3st-${run}` } })).status, 401);
-  assert.equal((await request("/api/auth", { method: "POST", body: { email: emails[1], password: newPassword } })).status, 200);
+  assert.equal((await request("/api/auth", { method: "POST", body: { action: "login", email: emails[1], password: `T3st-${run}` } })).status, 401);
+  assert.equal((await request("/api/auth", { method: "POST", body: { action: "login", email: emails[1], password: newPassword } })).status, 200);
   console.log("PASS: restaurant and vendor registration, draft resumption, approval, shared marketplace, idempotency, isolation, concurrent pickup and delivery lifecycle, scheduled availability, menu, authoritative earnings, session rotation, sign-out-all, sliding idle timeout, absolute lifetime and password change");
 } finally {
   try { sql(`begin; delete from order_events where order_id in (${testOrders}); delete from order_items where order_id in (${testOrders}); delete from orders where business_id in (${shops}); delete from menu_items where business_id in (${shops}); delete from settlements where business_id in (${shops}); delete from sessions where user_id in (${owners}); delete from businesses where owner_id in (${owners}); delete from users where id in (${owners}); commit;`); }

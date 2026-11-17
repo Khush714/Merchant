@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: app_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d app_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/app_db
+      APP_ORIGIN: http://127.0.0.1:3000
+      MERCHANT_APP_TOKEN_ENCRYPTION_KEY: ci-only-integration-encryption-key-0123456789
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate route types
+        run: npx next typegen
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Apply schema migrations
+        run: |
+          for file in drizzle/*.sql; do
+            echo "applying $file"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "$file"
+          done
+
+      - name: Integration test
+        run: |
+          nohup npm start > server.log 2>&1 &
+          for attempt in {1..30}; do
+            if curl -fsS http://127.0.0.1:3000/api/health > /dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              echo "Server did not become healthy."
+              cat server.log
+              exit 1
+            fi
+            sleep 2
+          done
+          npm test
+
+      - name: Upload server log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-log
+          path: server.log
+          if-no-files-found: ignore
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
