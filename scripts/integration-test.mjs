@@ -136,7 +136,18 @@ try {
   assert.equal(scalar(`select expires_at > now() + interval '29 days' from sessions where token_hash = '${vendorToken}'`), "t");
   sql(`update sessions set created_at = now() - interval '91 days' where token_hash = '${vendorToken}'`);
   assert.equal((await request("/api/auth", { cookie: vendorLogin.cookie })).data.user, null);
-  console.log("PASS: restaurant and vendor registration, draft resumption, approval, shared marketplace, idempotency, isolation, concurrent pickup and delivery lifecycle, scheduled availability, menu, authoritative earnings, and session rotation, sign-out-all, sliding idle timeout and absolute lifetime");
+  // Changing a password requires the current one, rotates the session and revokes the other devices.
+  const newPassword = `N3w-${run}`;
+  const passwordLogin = await request("/api/auth", { method: "POST", body: { email: emails[1], password: `T3st-${run}` } });
+  assert.equal(passwordLogin.status, 200); assert.ok(passwordLogin.cookie);
+  assert.equal((await request("/api/auth", { method: "POST", cookie: passwordLogin.cookie, body: { action: "change-password", currentPassword: "wrong-password", newPassword } })).status, 403);
+  const changed = await request("/api/auth", { method: "POST", cookie: passwordLogin.cookie, body: { action: "change-password", currentPassword: `T3st-${run}`, newPassword } });
+  assert.equal(changed.status, 200); assert.ok(changed.cookie); assert.notEqual(changed.cookie, passwordLogin.cookie);
+  assert.equal((await request("/api/auth", { cookie: passwordLogin.cookie })).data.user, null);
+  assert.equal((await request("/api/auth", { cookie: changed.cookie })).data.user.email, emails[1]);
+  assert.equal((await request("/api/auth", { method: "POST", body: { email: emails[1], password: `T3st-${run}` } })).status, 401);
+  assert.equal((await request("/api/auth", { method: "POST", body: { email: emails[1], password: newPassword } })).status, 200);
+  console.log("PASS: restaurant and vendor registration, draft resumption, approval, shared marketplace, idempotency, isolation, concurrent pickup and delivery lifecycle, scheduled availability, menu, authoritative earnings, session rotation, sign-out-all, sliding idle timeout, absolute lifetime and password change");
 } finally {
   try { sql(`begin; delete from order_events where order_id in (${testOrders}); delete from order_items where order_id in (${testOrders}); delete from orders where business_id in (${shops}); delete from menu_items where business_id in (${shops}); delete from settlements where business_id in (${shops}); delete from sessions where user_id in (${owners}); delete from businesses where owner_id in (${owners}); delete from users where id in (${owners}); commit;`); }
   catch (error) { console.error("Could not clean up disposable test records:", error.message); process.exitCode = 1; }

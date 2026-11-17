@@ -28,6 +28,27 @@ export function AccountModal({ onClose, onSuccess }: { onClose: () => void; onSu
     <p className="modal-bottom">{mode === "register" ? "Already have an account?" : "New to Savour?"} <button onClick={() => { setMode(mode === "register" ? "login" : "register"); setError(""); }}>{mode === "register" ? "Sign in" : "Create account"}</button></p>
   </Modal>;
 }
+export function PasswordModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
+  const [currentPassword, setCurrentPassword] = useState(""), [newPassword, setNewPassword] = useState(""), [confirmPassword, setConfirmPassword] = useState(""), [error, setError] = useState(""), [busy, setBusy] = useState(false);
+  async function submit(event: FormEvent) {
+    event.preventDefault(); setError("");
+    if (newPassword !== confirmPassword) { setError("The new passwords do not match."); return; }
+    if (newPassword === currentPassword) { setError("Choose a new password different from your current one."); return; }
+    setBusy(true);
+    try { await api("/api/auth", { method: "POST", body: JSON.stringify({ action: "change-password", currentPassword, newPassword }) }); onSuccess(); }
+    catch (err) { setError(err instanceof Error ? err.message : "Please try again."); }
+    finally { setBusy(false); }
+  }
+  return <Modal title="Change password" subtitle="Your other devices will be signed out." onClose={onClose}>
+    <form onSubmit={submit} className="form-stack">
+      <label>Current password<input type="password" autoComplete="current-password" required maxLength={128} value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} /></label>
+      <label>New password<input type="password" autoComplete="new-password" required minLength={8} maxLength={128} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="At least 8 characters" /></label>
+      <label>Confirm new password<input type="password" autoComplete="new-password" required minLength={8} maxLength={128} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} /></label>
+      {error && <p className="form-error">{error}</p>}
+      <button className="btn btn-primary full large" disabled={busy}>{busy ? "Updating…" : "Change password"}</button>
+    </form>
+  </Modal>;
+}
 export function SetupModal({ initial, onClose, onBusiness }: { initial: Business | null; onClose: () => void; onBusiness: (business: Business) => void }) {
   const [step, setStep] = useState<"type" | "details">(initial ? "details" : "type"), [business, setBusiness] = useState<Business | null>(initial);
   const [name, setName] = useState(initial?.name || ""), [ownerName, setOwnerName] = useState(initial?.ownerName || ""), [phone, setPhone] = useState(initial?.phone || ""), [address, setAddress] = useState(initial?.address || ""), [category, setCategory] = useState(initial?.category || ""), [registrationDetails, setRegistrationDetails] = useState(initial?.registrationDetails || "");

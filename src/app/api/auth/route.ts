@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { businesses, users } from "@/db/schema";
 import { getMarketplaceLink } from "@/lib/marketplace-bridge";
-import { ApiError, BODY_LIMITS, createSession, currentUser, deleteAllSessions, deleteSession, fail, hashPassword, rateLimit, readJson, sameOrigin, textValue, verifyPassword } from "@/lib/server";
+import { ApiError, BODY_LIMITS, changePassword, createSession, currentUser, deleteAllSessions, deleteSession, fail, hashPassword, rateLimit, readJson, requireUser, sameOrigin, textValue, verifyPassword } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
 
@@ -34,6 +34,18 @@ export async function POST(request: NextRequest) {
     if (body.action === "logout-all") {
       const response = NextResponse.json({ ok: true });
       await deleteAllSessions(response);
+      return response;
+    }
+    if (body.action === "change-password") {
+      const user = await requireUser();
+      const currentPassword = typeof body.currentPassword === "string" ? body.currentPassword : "";
+      const newPassword = typeof body.newPassword === "string" ? body.newPassword : "";
+      if (newPassword.length < 8 || newPassword.length > 128) throw new ApiError("Choose a new password of 8–128 characters.");
+      if (newPassword === currentPassword) throw new ApiError("Choose a new password different from your current one.");
+      const [record] = await db.select({ passwordHash: users.passwordHash }).from(users).where(eq(users.id, user.id)).limit(1);
+      if (!record || !(await verifyPassword(currentPassword, record.passwordHash))) throw new ApiError("Your current password is incorrect.", 403);
+      const response = NextResponse.json({ ok: true });
+      await changePassword(user.id, await hashPassword(newPassword), response);
       return response;
     }
     const email = textValue(body.email, 254).toLowerCase();

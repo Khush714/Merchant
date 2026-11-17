@@ -67,6 +67,12 @@ export async function deleteAllSessions(response: NextResponse) {
   if (user) await db.delete(sessions).where(eq(sessions.userId, user.id));
   clearSessionCookie(response);
 }
+/** Replace the password hash, revoke every existing session and issue a fresh session for this browser. */
+export async function changePassword(userId: string, passwordHash: string, response: NextResponse) {
+  await db.update(users).set({ passwordHash }).where(eq(users.id, userId));
+  await db.delete(sessions).where(eq(sessions.userId, userId));
+  await createSession(userId, response);
+}
 export async function currentUser() {
   const token = (await cookies()).get(COOKIE)?.value;
   if (!token) return null;
