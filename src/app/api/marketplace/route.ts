@@ -26,7 +26,7 @@ export async function GET(request: NextRequest) {
     }
     const rows = await db.select().from(businesses).where(and(eq(businesses.approvalStatus, "approved"), eq(businesses.isOpen, true))).orderBy(asc(businesses.name)).limit(100);
     return NextResponse.json({ businesses: rows.filter(withinOperatingHours).map((b) => ({ id: b.id, name: b.name, category: b.category, address: b.address, type: b.type })) });
-  } catch (error) { return fail(error); }
+  } catch (error) { return fail(error, request); }
 }
 export async function POST(request: NextRequest) {
   try {
@@ -62,5 +62,5 @@ export async function POST(request: NextRequest) {
       return created;
     });
     return NextResponse.json({ order: { id: order.id, orderNumber: order.orderNumber, status: order.status, total: order.total }, token }, { status: 201 });
-  } catch (error) { return fail(error); }
+  } catch (error) { return fail(error, request); }
 }

@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect } from "react";
+import { logError } from "@/lib/telemetry";
 
 // This replaces the root layout, so it owns its document and styles instead of using globals.css.
 export default function GlobalError({ error, retry }: { error: unknown; retry: () => void }) {
   useEffect(() => {
-    console.error("Merchant global error:", error);
+    logError("ui.global_error", error);
   }, [error]);
 
   return (

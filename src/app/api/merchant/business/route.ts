@@ -6,9 +6,9 @@ import { getMarketplaceLink, marketplaceFetch } from "@/lib/marketplace-bridge";
 import { ApiError, BODY_LIMITS, fail, readJson, requireBusiness, requireUser, sameOrigin, textValue } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
-export async function GET() {
+export async function GET(request: NextRequest) {
   try { const { business } = await requireBusiness(); return NextResponse.json({ business }); }
-  catch (error) { return fail(error); }
+  catch (error) { return fail(error, request); }
 }
 export async function POST(request: NextRequest) {
   try {
@@ -25,7 +25,7 @@ export async function POST(request: NextRequest) {
     const [business] = await db.insert(businesses).values({ ownerId: user.id, type: body.type }).onConflictDoNothing().returning();
     if (!business) throw new ApiError("Business already exists. Refresh and try again.", 409);
     return NextResponse.json({ business }, { status: 201 });
-  } catch (error) { return fail(error); }
+  } catch (error) { return fail(error, request); }
 }
 export async function PATCH(request: NextRequest) {
   try {
@@ -60,5 +60,5 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ business: linked ? { ...updated, approvalStatus: "approved" } : updated });
     }
     throw new ApiError("Unknown action.");
-  } catch (error) { return fail(error); }
+  } catch (error) { return fail(error, request); }
 }

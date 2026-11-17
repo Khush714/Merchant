@@ -1,12 +1,12 @@
 import { and, desc, eq, gte, sql } from "drizzle-orm";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { orders, settlements } from "@/db/schema";
 import { getMarketplaceLink, marketplaceFetch } from "@/lib/marketplace-bridge";
 import { fail, requireBusiness } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const { business } = await requireBusiness();
     if (await getMarketplaceLink(business.id)) {
@@ -45,5 +45,5 @@ export async function GET() {
     const counts: Record<string, number> = { new: 0, accepted: 0, preparing: 0, ready: 0, out_for_delivery: 0, completed: 0, rejected: 0, cancelled: 0 };
     groups.forEach((group) => { if (group.status in counts) counts[group.status] = group.count; });
     return NextResponse.json({ business, overview: { counts, todaySales: completed.total, todayOrders: today.count, completedToday: completed.count, latestNewOrderId: latestNew?.id ?? null, settlements: settlementRows } });
-  } catch (error) { return fail(error); }
+  } catch (error) { return fail(error, request); }
 }

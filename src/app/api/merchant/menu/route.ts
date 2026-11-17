@@ -15,7 +15,7 @@ function values(body: Record<string, unknown>) {
   if (imageUrl) { try { if (new URL(imageUrl).protocol !== "https:") throw new Error(); } catch { throw new ApiError("Image must be a valid HTTPS URL."); } }
   return { name, description, category, imageUrl, price, dietary };
 }
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const { business } = await requireBusiness();
     if (await getMarketplaceLink(business.id)) {
@@ -24,7 +24,7 @@ export async function GET() {
     }
     const items = await db.select().from(menuItems).where(and(eq(menuItems.businessId, business.id), eq(menuItems.archived, false))).orderBy(asc(menuItems.category), asc(menuItems.name)).limit(500);
     return NextResponse.json({ items });
-  } catch (error) { return fail(error); }
+  } catch (error) { return fail(error, request); }
 }
 export async function POST(request: NextRequest) {
   try {
@@ -35,7 +35,7 @@ export async function POST(request: NextRequest) {
     }
     const [item] = await db.insert(menuItems).values({ ...values(body), businessId: business.id }).returning();
     return NextResponse.json({ item }, { status: 201 });
-  } catch (error) { return fail(error); }
+  } catch (error) { return fail(error, request); }
 }
 export async function PATCH(request: NextRequest) {
   try {
@@ -53,7 +53,7 @@ export async function PATCH(request: NextRequest) {
     const [item] = await db.update(menuItems).set({ ...changes, updatedAt: new Date() }).where(scope).returning();
     if (!item) throw new ApiError("This item changed on another device. Refresh and try again.", 409);
     return NextResponse.json({ item });
-  } catch (error) { return fail(error); }
+  } catch (error) { return fail(error, request); }
 }
 export async function DELETE(request: NextRequest) {
   try {
@@ -66,5 +66,5 @@ export async function DELETE(request: NextRequest) {
     const [item] = await db.update(menuItems).set({ archived: true, available: false, updatedAt: new Date() }).where(and(eq(menuItems.id, body.id), eq(menuItems.businessId, business.id), eq(menuItems.archived, false))).returning();
     if (!item) throw new ApiError("Item not found.", 404);
     return NextResponse.json({ ok: true });
-  } catch (error) { return fail(error); }
+  } catch (error) { return fail(error, request); }
 }

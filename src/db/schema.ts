@@ -1,4 +1,4 @@
-import { boolean, index, integer, pgTable, serial, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { boolean, index, integer, jsonb, pgTable, serial, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -27,6 +27,28 @@ export const sessions = pgTable("sessions", {
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [index("sessions_user_idx").on(table.userId)]);
+
+/**
+ * Append-only security audit trail. Actors, emails, IPs and user agents are stored as hashes so the
+ * table can be retained for investigations without becoming a second copy of personal data. No
+ * application path updates or deletes these rows; pruning is a separate retention job.
+ */
+export const auditLogs = pgTable("audit_logs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  event: text("event").notNull(),
+  outcome: text("outcome").notNull(),
+  requestId: text("request_id"),
+  actorUserId: uuid("actor_user_id"),
+  actorEmailHash: text("actor_email_hash"),
+  businessId: uuid("business_id"),
+  ipHash: text("ip_hash"),
+  userAgentHash: text("user_agent_hash"),
+  detail: jsonb("detail").$type<Record<string, string | number | boolean | null>>().notNull().default({}),
+}, (table) => [
+  index("audit_logs_created_at_idx").on(table.createdAt),
+  index("audit_logs_event_created_at_idx").on(table.event, table.createdAt),
+]);
 
 export const businesses = pgTable("businesses", {
   id: uuid("id").primaryKey().defaultRandom(),

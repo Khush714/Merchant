@@ -29,6 +29,13 @@
       "when": 1794905725489,
       "tag": "0003_unique_marketplace_restaurant",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794907816191,
+      "tag": "0004_security_audit_log",
+      "breakpoints": true
     }
   ]
 }

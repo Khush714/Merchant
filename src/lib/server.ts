@@ -5,7 +5,8 @@ import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 import { and, desc, eq, lt, notInArray } from "drizzle-orm";
 import { db } from "@/db";
-import { businesses, sessions, users } from "@/db/schema";
+import { auditLogs, businesses, sessions, users } from "@/db/schema";
+import { logError, warn } from "@/lib/telemetry";
 
 const scrypt = promisify(scryptCallback);
 const COOKIE = "savour_session";
@@ -121,9 +122,68 @@ export function sameOrigin(request: NextRequest) {
   const host = request.headers.get("x-forwarded-host") || request.headers.get("host");
   if (host && originUrl.host !== host) throw new ApiError("Invalid request origin.", 403);
 }
-export function fail(error: unknown) {
+/** Correlation fields for structured logs and audit rows. Nothing here is a raw header value. */
+function requestContext(request: NextRequest) {
+  const suppliedId = request.headers.get("x-request-id")?.trim().slice(0, 64);
+  const userAgent = request.headers.get("user-agent") ?? "";
+  return {
+    requestId: suppliedId || randomBytes(12).toString("hex"),
+    method: request.method,
+    path: request.nextUrl.pathname,
+    ipHash: sha256(clientIp(request)),
+    ...(userAgent ? { userAgentHash: sha256(userAgent) } : {}),
+  };
+}
+
+/** Only scalar values survive, and secret-looking keys are redacted before persistence. */
+function safeDetail(detail: Record<string, unknown> = {}) {
+  const safe: Record<string, string | number | boolean | null> = {};
+  for (const [key, value] of Object.entries(detail).slice(0, 20)) {
+    if (/pass(word)?|secret|token|code|authorization|cookie|key/i.test(key)) {
+      safe[key] = "[redacted]";
+    } else if (typeof value === "string") {
+      safe[key] = value.slice(0, 200);
+    } else if (typeof value === "number" && Number.isFinite(value)) {
+      safe[key] = value;
+    } else if (typeof value === "boolean" || value === null) {
+      safe[key] = value;
+    }
+  }
+  return safe;
+}
+
+/** Security events are recorded explicitly at the decision point, never inferred from a response. */
+export async function recordAudit({ request, event, outcome, userId, businessId, email, detail }: {
+  request?: NextRequest;
+  event: string;
+  outcome: "success" | "failure" | "denied";
+  userId?: string | null;
+  businessId?: string | null;
+  email?: string | null;
+  detail?: Record<string, unknown>;
+}) {
+  const context = request ? requestContext(request) : undefined;
+  try {
+    await db.insert(auditLogs).values({
+      event,
+      outcome,
+      requestId: context?.requestId ?? null,
+      actorUserId: userId ?? null,
+      actorEmailHash: email ? sha256(email.trim().toLowerCase()) : null,
+      businessId: businessId ?? null,
+      ipHash: context?.ipHash ?? null,
+      userAgentHash: context?.userAgentHash ?? null,
+      detail: safeDetail(detail),
+    });
+  } catch (error) {
+    // The trail must not take down a request, but a write failure is itself reportable.
+    logError("audit.write_failed", error, { event, outcome });
+  }
+}
+
+export function fail(error: unknown, request?: NextRequest) {
   if (error instanceof ApiError) return NextResponse.json({ error: error.message }, { status: error.status });
-  console.error("API error:", error);
+  logError("api.unhandled_error", error, request ? requestContext(request) : {});
   return NextResponse.json({ error: "Something went wrong. Please try again." }, { status: 500 });
 }
 const attempts = new Map<string, { count: number; until: number }>();
@@ -143,12 +203,19 @@ function clientIp(request: NextRequest) {
   const candidate = request.headers.get(header)?.split(",")[0]?.trim() ?? "";
   return isIP(candidate) ? candidate : "unknown";
 }
+/** Returns true when this request crossed the limit; the caller records and returns the 429. */
 function memoryRateLimit(key: string, max: number, windowMs: number) {
   const now = Date.now();
   const entry = attempts.get(key);
-  if (!entry || entry.until < now) attempts.set(key, { count: 1, until: now + windowMs });
-  else if (++entry.count > max) throw new ApiError("Too many requests. Please try again shortly.", 429);
+  if (!entry || entry.until < now) {
+    attempts.set(key, { count: 1, until: now + windowMs });
+  } else if (entry.count >= max) {
+    return true;
+  } else {
+    entry.count++;
+  }
   if (attempts.size > 5000) for (const [k, value] of attempts) if (value.until < now) attempts.delete(k);
+  return false;
 }
 async function sharedRateLimit(key: string, windowMs: number) {
   const response = await fetch(UPSTASH_URL, {
@@ -170,17 +237,23 @@ export async function rateLimit(request: NextRequest, bucket: string, max = 30, 
   if (SHARED_RATE_LIMIT) {
     try {
       const count = await sharedRateLimit(key, windowMs);
-      if (count > max) throw new ApiError("Too many requests. Please try again shortly.", 429);
+      if (count > max) {
+        await recordAudit({ request, event: "rate_limit.exceeded", outcome: "denied", detail: { bucket, limit: max, windowMs } });
+        throw new ApiError("Too many requests. Please try again shortly.", 429);
+      }
       return;
     } catch (error) {
       if (error instanceof ApiError) throw error;
-      console.error("Shared rate limit store unavailable; falling back to per-instance limiting.", error);
+      logError("rate_limit.store_fallback", error, { bucket });
     }
   } else if (!warnedAboutMemoryLimiter) {
     warnedAboutMemoryLimiter = true;
-    console.warn("UPSTASH_REDIS_REST_URL/UPSTASH_REDIS_REST_TOKEN are not configured; rate limiting is per-instance.");
+    warn("rate_limit.memory_fallback", { note: "Upstash/KV is not configured; limiting is per-instance." });
   }
-  memoryRateLimit(key, max, windowMs);
+  if (memoryRateLimit(key, max, windowMs)) {
+    await recordAudit({ request, event: "rate_limit.exceeded", outcome: "denied", detail: { bucket, limit: max, windowMs } });
+    throw new ApiError("Too many requests. Please try again shortly.", 429);
+  }
 }
 export async function readJson<T = Record<string, any>>(request: NextRequest, maxBytes = 64 * 1024): Promise<T> {
   const contentType = request.headers.get("content-type");

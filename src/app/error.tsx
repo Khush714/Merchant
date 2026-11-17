@@ -2,11 +2,12 @@
 
 import { useEffect } from "react";
 import { Info } from "lucide-react";
+import { logError } from "@/lib/telemetry";
 
 export default function Error({ error, retry }: { error: unknown; retry: () => void }) {
   useEffect(() => {
     // The digest on server errors matches this entry in the server logs.
-    console.error("Merchant route error:", error);
+    logError("ui.route_error", error, { path: window.location.pathname });
   }, [error]);
 
   const digest = error instanceof Error && "digest" in error ? String((error as Error & { digest?: string }).digest ?? "") : "";

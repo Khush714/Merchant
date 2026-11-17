@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { businesses, users } from "@/db/schema";
 import { getMarketplaceLink } from "@/lib/marketplace-bridge";
-import { ApiError, BODY_LIMITS, changePassword, createSession, currentUser, deleteAllSessions, deleteSession, fail, hashPassword, rateLimit, readJson, requireUser, sameOrigin, textValue, verifyPassword } from "@/lib/server";
+import { ApiError, BODY_LIMITS, changePassword, createSession, currentUser, deleteAllSessions, deleteSession, fail, hashPassword, rateLimit, readJson, recordAudit, requireUser, sameOrigin, textValue, verifyPassword } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
 
@@ -13,13 +13,13 @@ async function withListingStatus<T extends { id: string; approvalStatus: string 
   return (await getMarketplaceLink(business.id)) ? { ...business, approvalStatus: "approved" as const } : business;
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const user = await currentUser();
     if (!user) return NextResponse.json({ user: null, business: null });
     const [business] = await db.select().from(businesses).where(eq(businesses.ownerId, user.id)).limit(1);
     return NextResponse.json({ user, business: await withListingStatus(business) });
-  } catch (error) { return fail(error); }
+  } catch (error) { return fail(error, request); }
 }
 export async function POST(request: NextRequest) {
   try {
@@ -27,13 +27,17 @@ export async function POST(request: NextRequest) {
     await rateLimit(request, "auth", 15, 60_000);
     const body = await readJson(request, BODY_LIMITS.auth);
     if (body.action === "logout") {
+      const user = await currentUser();
       const response = NextResponse.json({ ok: true });
       await deleteSession(response);
+      await recordAudit({ request, event: "auth.logout", outcome: "success", userId: user?.id, email: user?.email });
       return response;
     }
     if (body.action === "logout-all") {
+      const user = await currentUser();
       const response = NextResponse.json({ ok: true });
       await deleteAllSessions(response);
+      await recordAudit({ request, event: "auth.logout_all", outcome: "success", userId: user?.id, email: user?.email });
       return response;
     }
     if (body.action === "change-password") {
@@ -43,9 +47,13 @@ export async function POST(request: NextRequest) {
       if (newPassword.length < 8 || newPassword.length > 128) throw new ApiError("Choose a new password of 8–128 characters.");
       if (newPassword === currentPassword) throw new ApiError("Choose a new password different from your current one.");
       const [record] = await db.select({ passwordHash: users.passwordHash }).from(users).where(eq(users.id, user.id)).limit(1);
-      if (!record || !(await verifyPassword(currentPassword, record.passwordHash))) throw new ApiError("Your current password is incorrect.", 403);
+      if (!record || !(await verifyPassword(currentPassword, record.passwordHash))) {
+        await recordAudit({ request, event: "auth.change_password", outcome: "failure", userId: user.id, email: user.email, detail: { reason: "invalid_current_password" } });
+        throw new ApiError("Your current password is incorrect.", 403);
+      }
       const response = NextResponse.json({ ok: true });
       await changePassword(user.id, await hashPassword(newPassword), response);
+      await recordAudit({ request, event: "auth.change_password", outcome: "success", userId: user.id, email: user.email, detail: { sessionsRevoked: true } });
       return response;
     }
     const email = textValue(body.email, 254).toLowerCase();
@@ -53,22 +61,33 @@ export async function POST(request: NextRequest) {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || password.length < 8 || password.length > 128) throw new ApiError("Enter a valid email and a password of 8–128 characters.");
     if (body.action === "register") {
       const existing = await db.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1);
-      if (existing.length) throw new ApiError("An account with this email already exists.", 409);
+      if (existing.length) {
+        await recordAudit({ request, event: "auth.register", outcome: "failure", email, detail: { reason: "email_exists" } });
+        throw new ApiError("An account with this email already exists.", 409);
+      }
       const passwordHash = await hashPassword(password);
       const [user] = await db.insert(users).values({ email, passwordHash }).onConflictDoNothing().returning({ id: users.id, email: users.email });
-      if (!user) throw new ApiError("An account with this email already exists.", 409);
+      if (!user) {
+        await recordAudit({ request, event: "auth.register", outcome: "failure", email, detail: { reason: "email_exists" } });
+        throw new ApiError("An account with this email already exists.", 409);
+      }
       const response = NextResponse.json({ user, business: null }, { status: 201 });
       await createSession(user.id, response);
+      await recordAudit({ request, event: "auth.register", outcome: "success", userId: user.id, email: user.email });
       return response;
     }
     if (body.action === "login") {
       const [record] = await db.select().from(users).where(eq(users.email, email)).limit(1);
-      if (!record || !(await verifyPassword(password, record.passwordHash))) throw new ApiError("Incorrect email or password.", 401);
+      if (!record || !(await verifyPassword(password, record.passwordHash))) {
+        await recordAudit({ request, event: "auth.login", outcome: "failure", email, detail: { reason: "invalid_credentials" } });
+        throw new ApiError("Incorrect email or password.", 401);
+      }
       const [business] = await db.select().from(businesses).where(eq(businesses.ownerId, record.id)).limit(1);
       const response = NextResponse.json({ user: { id: record.id, email: record.email }, business: await withListingStatus(business) });
       await createSession(record.id, response);
+      await recordAudit({ request, event: "auth.login", outcome: "success", userId: record.id, email: record.email });
       return response;
     }
     throw new ApiError("Unknown action.");
-  } catch (error) { return fail(error); }
+  } catch (error) { return fail(error, request); }
 }

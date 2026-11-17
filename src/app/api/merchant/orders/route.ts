@@ -61,7 +61,7 @@ export async function GET(request: NextRequest) {
     const hasMore = rows.length > limit, selected = rows.slice(0, limit);
     const items = selected.length ? await db.select().from(orderItems).where(inArray(orderItems.orderId, selected.map((o) => o.id))) : [];
     return NextResponse.json({ orders: selected.map(({ idempotencyHash: _key, requestHash: _hash, ...order }) => ({ ...order, items: items.filter((item) => item.orderId === order.id) })), hasMore, page });
-  } catch (error) { return fail(error); }
+  } catch (error) { return fail(error, request); }
 }
 export async function PATCH(request: NextRequest) {
   try {
@@ -139,5 +139,5 @@ export async function PATCH(request: NextRequest) {
       return result;
     });
     return NextResponse.json({ order: updated });
-  } catch (error) { return fail(error); }
+  } catch (error) { return fail(error, request); }
 }

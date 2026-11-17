@@ -7,6 +7,7 @@ const base = process.env.TEST_BASE_URL || "http://127.0.0.1:3000";
 const database = process.env.DATABASE_URL;
 if (!database || !["127.0.0.1", "localhost", "::1"].includes(new URL(database).hostname)) throw new Error("This disposable smoke test requires a local DATABASE_URL.");
 const run = randomUUID().replaceAll("-", "");
+const hash = (value) => createHash("sha256").update(value).digest("hex");
 const emails = [`restaurant-${run}@example.test`, `vendor-${run}@example.test`];
 const owners = `select id from users where email in ('${emails[0]}','${emails[1]}')`;
 const shops = `select id from businesses where owner_id in (${owners})`;
@@ -65,11 +66,16 @@ try {
   assert.match(await missing.text(), /Page not found/);
   const unauth = await request("/api/merchant/orders"); assert.equal(unauth.status, 401);
   assert.equal((await request("/api/admin/approval", { method: "POST", body: { businessId: randomUUID(), status: "approved" } })).status, 403);
+  assert.equal(scalar(`select count(*) from audit_logs where event='admin.approval' and outcome='denied' and detail->>'reason'='invalid_token'`), "1");
   assert.equal((await rawRequest("/api/marketplace", { body: "{not json", contentType: "application/json" })).status, 400);
   assert.equal((await rawRequest("/api/marketplace", { body: "businessId=1", contentType: "text/plain" })).status, 415);
   assert.equal((await rawRequest("/api/marketplace", { body: JSON.stringify({ padding: "x".repeat(140 * 1024) }), contentType: "application/json" })).status, 413);
   assert.equal((await rawRequest("/api/marketplace", { body: "", contentType: "application/json" })).status, 400);
   const restaurant = await account(emails[0], "restaurant"), vendor = await account(emails[1], "vendor");
+  for (const email of emails) {
+    assert.equal(scalar(`select count(*) from audit_logs where event='auth.register' and outcome='success' and actor_email_hash='${hash(email)}' and actor_user_id=(select id from users where email='${email}')`), "1");
+  }
+  assert.equal(scalar(`select count(*) from audit_logs where request_id is null or ip_hash is null or outcome not in ('success','failure','denied')`), "0");
   let marketplace = await request("/api/marketplace"); assert.ok(!marketplace.data.businesses.some((b) => [restaurant.business.id, vendor.business.id].includes(b.id)));
   // Simulate the trusted review system in a disposable local database.
   sql(`update businesses set approval_status='approved' where id in (${shops})`);
@@ -145,9 +151,10 @@ try {
   assert.equal((await request("/api/auth", { method: "POST", cookie: rotated.cookie, body: { action: "logout-all" } })).status, 200);
   assert.equal((await request("/api/auth", { cookie: rotated.cookie })).data.user, null);
   assert.equal((await request("/api/auth", { cookie: extraLogin.cookie })).data.user, null);
+  assert.equal(scalar(`select count(*) from audit_logs where event='auth.logout_all' and outcome='success' and actor_user_id=(select id from users where email='${emails[0]}')`), "1");
   // An idle-expired session is rejected and removed; an old session with recent use slides its expiry
   // forward but still dies at the absolute lifetime.
-  const tokenHash = (token) => createHash("sha256").update(token).digest("hex");
+  const tokenHash = hash;
   sql(`update sessions set expires_at = now() - interval '1 minute' where token_hash = '${tokenHash(vendor.cookie.split("=")[1])}'`);
   assert.equal((await request("/api/auth", { cookie: vendor.cookie })).data.user, null);
   const vendorLogin = await request("/api/auth", { method: "POST", body: { action: "login", email: emails[1], password: `T3st-${run}` } });
@@ -169,8 +176,13 @@ try {
   assert.equal((await request("/api/auth", { cookie: changed.cookie })).data.user.email, emails[1]);
   assert.equal((await request("/api/auth", { method: "POST", body: { action: "login", email: emails[1], password: `T3st-${run}` } })).status, 401);
   assert.equal((await request("/api/auth", { method: "POST", body: { action: "login", email: emails[1], password: newPassword } })).status, 200);
-  console.log("PASS: security headers and 404 boundary, restaurant and vendor registration, draft resumption, approval, shared marketplace, idempotency, isolation, concurrent pickup and delivery lifecycle, scheduled availability, menu, authoritative earnings, session rotation, sign-out-all, sliding idle timeout, absolute lifetime and password change");
+  const vendorId = scalar(`select id from users where email='${emails[1]}'`);
+  assert.equal(scalar(`select count(*) from audit_logs where event='auth.login' and outcome='failure' and actor_email_hash='${hash(emails[1])}'`), "1");
+  assert.equal(scalar(`select count(*) from audit_logs where event='auth.change_password' and outcome='failure' and actor_user_id='${vendorId}' and detail->>'reason'='invalid_current_password'`), "1");
+  assert.equal(scalar(`select count(*) from audit_logs where event='auth.change_password' and outcome='success' and actor_user_id='${vendorId}' and detail->>'sessionsRevoked'='true'`), "1");
+  assert.equal(scalar(`select count(*) from audit_logs where detail::text like '%T3st-%' or detail::text like '%N3w-%' or detail::text like '%@example.test%'`), "0");
+  console.log("PASS: security headers and 404 boundary, registration, approval, shared marketplace, idempotency, isolation, concurrent lifecycle, menu, earnings, sessions, password change and hashed security audit trail");
 } finally {
-  try { sql(`begin; delete from order_events where order_id in (${testOrders}); delete from order_items where order_id in (${testOrders}); delete from orders where business_id in (${shops}); delete from menu_items where business_id in (${shops}); delete from settlements where business_id in (${shops}); delete from sessions where user_id in (${owners}); delete from businesses where owner_id in (${owners}); delete from users where id in (${owners}); commit;`); }
+  try { sql(`begin; delete from audit_logs where actor_user_id in (${owners}) or business_id in (${shops}); delete from order_events where order_id in (${testOrders}); delete from order_items where order_id in (${testOrders}); delete from orders where business_id in (${shops}); delete from menu_items where business_id in (${shops}); delete from settlements where business_id in (${shops}); delete from sessions where user_id in (${owners}); delete from businesses where owner_id in (${owners}); delete from users where id in (${owners}); commit;`); }
   catch (error) { console.error("Could not clean up disposable test records:", error.message); process.exitCode = 1; }
 }
