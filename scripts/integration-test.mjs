@@ -8,9 +8,10 @@ const database = process.env.DATABASE_URL;
 if (!database || !["127.0.0.1", "localhost", "::1"].includes(new URL(database).hostname)) throw new Error("This disposable smoke test requires a local DATABASE_URL.");
 const run = randomUUID().replaceAll("-", "");
 const hash = (value) => createHash("sha256").update(value).digest("hex");
-const emails = [`restaurant-${run}@example.test`, `vendor-${run}@example.test`];
+const emails = [`restaurant-${run}@example.test`, `vendor-${run}@example.test`, `reassign-${run}@example.test`];
 const missingEmail = `missing-${run}@example.test`;
-const owners = `select id from users where email in ('${emails[0]}','${emails[1]}')`;
+const emailHashes = [...emails, missingEmail].map((email) => `'${hash(email)}'`).join(",");
+const owners = `select id from users where email in (${emails.map((email) => `'${email}'`).join(",")})`;
 const shops = `select id from businesses where owner_id in (${owners})`;
 const testOrders = `select id from orders where business_id in (${shops})`;
 function sql(statement) { execFileSync("psql", [database, "-v", "ON_ERROR_STOP=1", "-q", "-c", statement], { stdio: "pipe" }); }
@@ -18,8 +19,8 @@ function scalar(statement) { return execFileSync("psql", [database, "-v", "ON_ER
 function accountToken(value, email, purpose, expiry = "now() + interval '1 hour'") {
   sql(`begin; delete from account_tokens where user_id=(select id from users where email='${email}') and purpose='${purpose}'; insert into account_tokens (token_hash, user_id, purpose, expires_at) values ('${hash(value)}', (select id from users where email='${email}'), '${purpose}', ${expiry}); commit;`);
 }
-async function request(path, { method = "GET", cookie, body } = {}) {
-  const send = () => fetch(`${base}${path}`, { method, headers: { ...(cookie ? { cookie } : {}), ...(body ? { "content-type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+async function request(path, { method = "GET", cookie, body, headers = {} } = {}) {
+  const send = () => fetch(`${base}${path}`, { method, headers: { ...headers, ...(cookie ? { cookie } : {}), ...(body ? { "content-type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
   let response = await send();
   // The auth bucket allows a fixed number of requests per IP per minute. A repeated run started
   // shortly after a previous one can trip it; wait for the window once instead of failing the run.
@@ -30,6 +31,9 @@ async function request(path, { method = "GET", cookie, body } = {}) {
   }
   const data = await response.json();
   return { status: response.status, data, cookie: response.headers.get("set-cookie")?.split(";")[0] };
+}
+async function adminOwnerRequest(body) {
+  return request("/api/admin/owner", { method: "POST", body, headers: { authorization: `Bearer ${process.env.MARKETPLACE_ADMIN_TOKEN ?? ""}` } });
 }
 async function rawRequest(path, { method = "POST", cookie, body, contentType } = {}) {
   const response = await fetch(`${base}${path}`, { method, headers: { ...(cookie ? { cookie } : {}), ...(contentType ? { "content-type": contentType } : {}) }, ...(body === undefined ? {} : { body }) });
@@ -85,12 +89,15 @@ try {
   assert.equal(publicAuth.status, 200); assert.equal(publicAuth.data.user, null); assert.equal(publicAuth.data.verificationRequired, false);
   const unauth = await request("/api/merchant/orders"); assert.equal(unauth.status, 401);
   assert.equal((await request("/api/admin/approval", { method: "POST", body: { businessId: randomUUID(), status: "approved" } })).status, 403);
+  assert.equal((await request("/api/admin/owner", { method: "POST", body: { businessId: randomUUID(), email: "nobody@example.test" }, headers: { authorization: "Bearer wrong-token" } })).status, 403);
   assert.ok(Number(scalar(`select count(*) from audit_logs where event='admin.approval' and outcome='denied' and detail->>'reason'='invalid_token' and created_at > now() - interval '2 minutes'`)) >= 1);
   assert.equal((await rawRequest("/api/marketplace", { body: "{not json", contentType: "application/json" })).status, 400);
   assert.equal((await rawRequest("/api/marketplace", { body: "businessId=1", contentType: "text/plain" })).status, 415);
   assert.equal((await rawRequest("/api/marketplace", { body: JSON.stringify({ padding: "x".repeat(140 * 1024) }), contentType: "application/json" })).status, 413);
   assert.equal((await rawRequest("/api/marketplace", { body: "", contentType: "application/json" })).status, 400);
   const restaurant = await account(emails[0], "restaurant"), vendor = await account(emails[1], "vendor");
+  const reassignTarget = await request("/api/auth", { method: "POST", body: { action: "register", email: emails[2], password: `T3st-${run}` } });
+  assert.equal(reassignTarget.status, 201); assert.ok(reassignTarget.cookie); assert.equal(reassignTarget.data.business, null);
   for (const email of emails) {
     assert.equal(scalar(`select count(*) from audit_logs where event='auth.register' and outcome='success' and actor_email_hash='${hash(email)}' and actor_user_id=(select id from users where email='${email}')`), "1");
   }
@@ -251,8 +258,18 @@ try {
   assert.equal(scalar(`select count(*) from audit_logs where event='auth.verify_email' and outcome='success' and actor_user_id in (${owners})`), "2");
   assert.equal(scalar(`select count(*) from audit_logs where event='auth.reset_password' and outcome='success' and actor_user_id='${vendorId}' and detail->>'sessionsRevoked'='true'`), "1");
   assert.equal(scalar(`select count(*) from audit_logs where event='auth.forgot_password' and actor_email_hash='${hash(missingEmail)}' and detail->>'accountFound'='false'`), "1");
-  console.log("PASS: security headers, opt-in verification gate, registration, approval, marketplace, concurrency, sessions, password change, hashed audit trail, email verification, single-use password reset and authoritative settlement mirror");
+  // A business created under the wrong account can be recovered by an authenticated server, with conflicts refused.
+  assert.equal((await adminOwnerRequest({ businessId: vendor.business.id, email: missingEmail })).status, 404);
+  const reassigned = await adminOwnerRequest({ businessId: vendor.business.id, email: emails[2] });
+  assert.equal(reassigned.status, 200); assert.equal(reassigned.data.business.ownerId, reassignTarget.data.user.id);
+  assert.equal((await request("/api/auth", { cookie: vendor.cookie })).data.business, null);
+  assert.equal((await request("/api/auth", { cookie: reassignTarget.cookie })).data.business.id, vendor.business.id);
+  assert.equal((await adminOwnerRequest({ businessId: restaurant.business.id, email: emails[2] })).status, 409);
+  assert.equal((await adminOwnerRequest({ businessId: vendor.business.id, email: emails[1] })).status, 200);
+  assert.equal(scalar(`select count(*) from audit_logs where event='admin.reassign_owner' and outcome='success' and business_id='${vendor.business.id}' and detail->>'newOwnerId'='${reassignTarget.data.user.id}'`), "1");
+  assert.equal(scalar(`select count(*) from audit_logs where event='admin.reassign_owner' and outcome='failure' and business_id='${vendor.business.id}' and detail->>'reason'='target_not_found'`), "1");
+  console.log("PASS: security headers, opt-in verification gate, registration, approval, owner recovery, marketplace, concurrency, sessions, password change, hashed audit trail, email verification, single-use password reset and authoritative settlement mirror");
 } finally {
-  try { sql(`begin; delete from audit_logs where actor_user_id in (${owners}) or business_id in (${shops}) or actor_email_hash in ('${hash(emails[0])}','${hash(emails[1])}','${hash(missingEmail)}') or (event in ('auth.verify_email','auth.reset_password') and outcome='failure'); delete from account_tokens where user_id in (${owners}); delete from order_events where order_id in (${testOrders}); delete from order_items where order_id in (${testOrders}); delete from orders where business_id in (${shops}); delete from menu_items where business_id in (${shops}); delete from settlements where business_id in (${shops}); delete from sessions where user_id in (${owners}); delete from businesses where owner_id in (${owners}); delete from users where id in (${owners}); commit;`); }
+  try { sql(`begin; delete from audit_logs where actor_user_id in (${owners}) or business_id in (${shops}) or actor_email_hash in (${emailHashes}) or (event in ('auth.verify_email','auth.reset_password') and outcome='failure'); delete from account_tokens where user_id in (${owners}); delete from order_events where order_id in (${testOrders}); delete from order_items where order_id in (${testOrders}); delete from orders where business_id in (${shops}); delete from menu_items where business_id in (${shops}); delete from settlements where business_id in (${shops}); delete from sessions where user_id in (${owners}); delete from businesses where owner_id in (${owners}); delete from users where id in (${owners}); commit;`); }
   catch (error) { console.error("Could not clean up disposable test records:", error.message); process.exitCode = 1; }
 }

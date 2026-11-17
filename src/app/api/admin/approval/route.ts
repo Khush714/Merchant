@@ -1,20 +1,14 @@
-import { timingSafeEqual } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { businesses } from "@/db/schema";
-import { ApiError, BODY_LIMITS, fail, rateLimit, readJson, recordAudit, sha256 } from "@/lib/server";
+import { requireAdmin } from "@/lib/admin";
+import { ApiError, BODY_LIMITS, fail, readJson, recordAudit } from "@/lib/server";
 
 // Service-to-service approval hook. Never expose the token to a browser.
 export async function POST(request: NextRequest) {
   try {
-    await rateLimit(request, "approval", 20);
-    const configured = process.env.MARKETPLACE_ADMIN_TOKEN;
-    const supplied = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") || "";
-    if (!configured || !supplied || !timingSafeEqual(Buffer.from(sha256(configured), "hex"), Buffer.from(sha256(supplied), "hex"))) {
-      await recordAudit({ request, event: "admin.approval", outcome: "denied", detail: { reason: "invalid_token" } });
-      throw new ApiError("Not authorised.", 403);
-    }
+    await requireAdmin(request, "admin.approval", "approval");
     const body = await readJson(request, BODY_LIMITS.admin);
     if (typeof body.businessId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.businessId) || !["approved", "rejected"].includes(body.status)) {
       await recordAudit({ request, event: "admin.approval", outcome: "denied", detail: { reason: "invalid_request" } });

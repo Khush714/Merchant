@@ -14,7 +14,7 @@ Install the Supabase CLI, authenticate with `npx supabase login`, then link the 
 
 For local development, set `DATABASE_URL` to a Supabase PostgreSQL connection string before `npm run dev`. No demo records are inserted into the database. Signed-out visitors see a clearly labeled, non-persistent sample workspace; real accounts use only server data.
 
-For service-to-service approval, configure a long random `MARKETPLACE_ADMIN_TOKEN` on the server and call `POST /api/admin/approval` with `Authorization: Bearer <token>` and `{ "businessId": "...", "status": "approved" | "rejected" }`. Only pending businesses can be reviewed. Approval never opens the store automatically. This is a minimal integration hook, not an administrative review UI or a regulatory verification system.
+For service-to-service approval, configure a long random `MARKETPLACE_ADMIN_TOKEN` on the server and call `POST /api/admin/approval` with `Authorization: Bearer <token>` and `{ "businessId": "...", "status": "approved" | "rejected" }`. Only pending businesses can be reviewed. Approval never opens the store automatically. The same token protects `POST /api/admin/owner` with `{ "businessId": "...", "email": "owner@example.com" }`, a recovery hook for a business created under the wrong account. The destination account must already exist and own no other business; the old account is left unchanged and every decision is audit logged. These are minimal server-to-service hooks, not an administrative review UI or a regulatory verification system.
 
 ## API surface
 
@@ -27,6 +27,7 @@ For service-to-service approval, configure a long random `MARKETPLACE_ADMIN_TOKE
 - `GET/POST/DELETE /api/merchant/marketplace-link`: read the current Marketplace pairing, redeem a one-time pairing code, or disconnect and revoke the remote token.
 - `GET/POST /api/marketplace`: approved/open business listings, available items, token-protected customer tracking and idempotent order creation. Prices are calculated on the server and store status, hours and item availability are rechecked in a transaction. Order creation is refused for paired businesses, which accept orders through Marketplace.
 - `POST /api/admin/approval`: server-token-protected review hook.
+- `POST /api/admin/owner`: server-token-protected recovery hook that moves one business to an existing, unoccupied owner account.
 
 ## Savour Marketplace integration
 
