@@ -49,6 +49,16 @@ async function account(email, type) {
 }
 async function transition(cookie, id, expectedStatus, nextStatus, extra = {}) { return request("/api/merchant/orders", { method: "PATCH", cookie, body: { id, expectedStatus, nextStatus, ...extra } }); }
 try {
+  const health = await fetch(`${base}/api/health`);
+  assert.equal(health.status, 200);
+  const csp = health.headers.get("content-security-policy") ?? "";
+  assert.match(csp, /default-src 'self'/);
+  assert.match(csp, /frame-ancestors 'none'/);
+  assert.match(csp, /object-src 'none'/);
+  assert.equal(health.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(health.headers.get("x-frame-options"), "DENY");
+  assert.equal(health.headers.get("referrer-policy"), "strict-origin-when-cross-origin");
+  assert.match(health.headers.get("strict-transport-security") ?? "", /max-age=/);
   const unauth = await request("/api/merchant/orders"); assert.equal(unauth.status, 401);
   assert.equal((await request("/api/admin/approval", { method: "POST", body: { businessId: randomUUID(), status: "approved" } })).status, 403);
   assert.equal((await rawRequest("/api/marketplace", { body: "{not json", contentType: "application/json" })).status, 400);
@@ -155,7 +165,7 @@ try {
   assert.equal((await request("/api/auth", { cookie: changed.cookie })).data.user.email, emails[1]);
   assert.equal((await request("/api/auth", { method: "POST", body: { action: "login", email: emails[1], password: `T3st-${run}` } })).status, 401);
   assert.equal((await request("/api/auth", { method: "POST", body: { action: "login", email: emails[1], password: newPassword } })).status, 200);
-  console.log("PASS: restaurant and vendor registration, draft resumption, approval, shared marketplace, idempotency, isolation, concurrent pickup and delivery lifecycle, scheduled availability, menu, authoritative earnings, session rotation, sign-out-all, sliding idle timeout, absolute lifetime and password change");
+  console.log("PASS: security headers, restaurant and vendor registration, draft resumption, approval, shared marketplace, idempotency, isolation, concurrent pickup and delivery lifecycle, scheduled availability, menu, authoritative earnings, session rotation, sign-out-all, sliding idle timeout, absolute lifetime and password change");
 } finally {
   try { sql(`begin; delete from order_events where order_id in (${testOrders}); delete from order_items where order_id in (${testOrders}); delete from orders where business_id in (${shops}); delete from menu_items where business_id in (${shops}); delete from settlements where business_id in (${shops}); delete from sessions where user_id in (${owners}); delete from businesses where owner_id in (${owners}); delete from users where id in (${owners}); commit;`); }
   catch (error) { console.error("Could not clean up disposable test records:", error.message); process.exitCode = 1; }
