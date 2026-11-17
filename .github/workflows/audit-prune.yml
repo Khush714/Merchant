@@ -1,0 +1,54 @@
+name: Audit log retention
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Delete eligible audit logs (default: dry run only)"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: audit-prune
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prune:
+    name: Prune audit logs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+      AUDIT_RETENTION_DAYS: ${{ vars.AUDIT_RETENTION_DAYS || '90' }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify production database secret
+        run: |
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "PROD_DATABASE_URL repository secret is required." >&2
+            exit 1
+          fi
+
+      - name: Dry run
+        run: npm run audit:prune | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply retention
+        if: github.event_name == 'schedule' || inputs.apply
+        run: npm run audit:prune -- --apply | tee -a "$GITHUB_STEP_SUMMARY"
