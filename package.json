@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "test:settlements": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/settlement-payload-test.mjs",
     "test:settlement-sync": "node scripts/settlement-sync-test.mjs",
+    "audit:prune": "node scripts/prune-audit-logs.mjs",
     "test": "npm run test:settlements && node scripts/integration-test.mjs && npm run test:settlement-sync"
   },
   "dependencies": {
