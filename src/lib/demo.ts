@@ -3,9 +3,9 @@ import type { Business, MenuItem, Order, Overview } from "@/lib/types";
 // Explicitly isolated, non-persistent sample workspace. Never used by authenticated API routes.
 export const demoBusiness: Business = { id: "demo", type: "restaurant", name: "The Curry Leaf", ownerName: "Ananya", phone: "", address: "Indiranagar, Bengaluru", category: "North Indian", registrationDetails: "", approvalStatus: "approved", isOpen: true, pickupEnabled: true, deliveryEnabled: true, hoursEnabled: true, opensAt: "09:00", closesAt: "22:00" };
 export const demoMenu: MenuItem[] = [
-  { id: "demo-item-1", businessId: "demo", name: "Butter Chicken", description: "Tender chicken in a rich, creamy tomato gravy", price: 38900, category: "Mains", imageUrl: "/images/butter-chicken.jpg", dietary: "nonveg", available: true, archived: false },
-  { id: "demo-item-2", businessId: "demo", name: "Paneer Tikka Masala", description: "Grilled paneer in a fragrant spiced gravy", price: 34900, category: "Mains", imageUrl: "/images/paneer.jpg", dietary: "veg", available: true, archived: false },
-  { id: "demo-item-3", businessId: "demo", name: "Chicken Biryani", description: "Aromatic basmati rice, spices and chicken", price: 32900, category: "Rice & Biryani", imageUrl: "/images/biryani.jpg", dietary: "nonveg", available: true, archived: false },
+  { id: "demo-item-1", businessId: "demo", name: "Butter Chicken", description: "Tender chicken in a rich, creamy tomato gravy", price: 38900, category: "Mains", imageUrl: "", dietary: "nonveg", available: true, archived: false },
+  { id: "demo-item-2", businessId: "demo", name: "Paneer Tikka Masala", description: "Grilled paneer in a fragrant spiced gravy", price: 34900, category: "Mains", imageUrl: "", dietary: "veg", available: true, archived: false },
+  { id: "demo-item-3", businessId: "demo", name: "Chicken Biryani", description: "Aromatic basmati rice, spices and chicken", price: 32900, category: "Rice & Biryani", imageUrl: "", dietary: "nonveg", available: true, archived: false },
   { id: "demo-item-4", businessId: "demo", name: "Garlic Butter Naan", description: "Freshly baked and brushed with garlic butter", price: 8900, category: "Breads", imageUrl: "", dietary: "veg", available: true, archived: false },
   { id: "demo-item-5", businessId: "demo", name: "Mango Lassi", description: "A sweet, creamy mango yogurt drink", price: 12900, category: "Drinks", imageUrl: "", dietary: "veg", available: false, archived: false },
 ];
