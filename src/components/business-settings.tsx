@@ -33,7 +33,12 @@ function MarketplaceConnection() {
     try {
       const result = await api<MarketplaceLinkState>("/api/merchant/marketplace-link", { method: "POST", body: JSON.stringify({ code: code.trim() }) });
       setLink(result); setCode(""); window.dispatchEvent(new Event("savour-marketplace-link-changed")); setMessage("Marketplace connected. Menu and orders will now use the Marketplace records.");
-    } catch (error) { setMessage(error instanceof Error ? error.message : "Could not connect Marketplace."); }
+    } catch (error) {
+      // A pairing code is consumed even when the local save fails; never leave it in the input for a retry.
+      setCode("");
+      const reason = error instanceof Error ? error.message : "Could not connect Marketplace.";
+      setMessage(/used|expired/i.test(reason) ? `${reason} Generate a fresh code and try again.` : reason);
+    }
     finally { setBusy(false); }
   }
   async function disconnect() {

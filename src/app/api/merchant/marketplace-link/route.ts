@@ -32,7 +32,16 @@ export async function POST(request: NextRequest) {
     const restaurant = await pairWithMarketplace(business.id, code);
     await recordAudit({ request, event: "marketplace.link", outcome: "success", businessId: business.id, detail: { restaurantId: restaurant.id } });
     return NextResponse.json({ linked: true, restaurant }, { status: 201, headers: { "Cache-Control": "no-store" } });
-  } catch (error) { return fail(error, request); }
+  } catch (error) {
+    const status = error instanceof ApiError ? error.status : 500;
+    await recordAudit({
+      request,
+      event: "marketplace.link",
+      outcome: "failure",
+      detail: { reason: error instanceof ApiError ? error.message.slice(0, 120) : "save_failed", status },
+    });
+    return fail(error, request);
+  }
 }
 
 /** Disconnect both ends; if revocation fails, keep the local link so the state is recoverable. */

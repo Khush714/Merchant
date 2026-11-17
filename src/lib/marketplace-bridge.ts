@@ -78,6 +78,13 @@ export async function saveMarketplaceLink(input: {
   restaurant: { id: number; name: string; slug: string };
 }) {
   const encrypted = encryptMarketplaceToken(input.accessToken);
+  const [conflict] = await db.select({ businessId: businessMarketplaceLinks.businessId })
+    .from(businessMarketplaceLinks)
+    .where(eq(businessMarketplaceLinks.marketplaceRestaurantId, input.restaurant.id))
+    .limit(1);
+  if (conflict && conflict.businessId !== input.businessId) {
+    throw new ApiError("This Marketplace listing is already connected to another business.", 409);
+  }
   await db.insert(businessMarketplaceLinks).values({
     businessId: input.businessId,
     marketplaceRestaurantId: input.restaurant.id,
