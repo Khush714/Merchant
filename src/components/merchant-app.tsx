@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import Image from "next/image";
 import Link from "next/link";
 import { ArrowDownRight, ArrowRight, ArrowUpRight, Bell, BellRing, Bike, BookOpen, Check, CheckCircle2, ChefHat, ChevronDown, ChevronLeft, ChevronRight, CircleDollarSign, Clock3, CreditCard, ExternalLink, Headphones, HelpCircle, Home, Info, KeyRound, LayoutGrid, LogOut, Mail, Menu as MenuIcon, MoreHorizontal, PackageCheck, Plus, Search, Settings2, ShoppingBag, Sparkles, Store, Trash2, UtensilsCrossed, WifiOff, X } from "lucide-react";
-import { AccountModal, ApiUnauthorizedError, AUTH_EXPIRED_EVENT, api, DecisionModal, FulfilmentModal, MenuModal, Modal, PasswordModal, SetupModal, type MenuInput } from "@/components/dialogs";
+import { AccountModal, Api401Error, AUTH_EXPIRED_EVENT, api, DecisionModal, FulfilmentModal, MenuModal, Modal, PasswordModal, SetupModal, type MenuInput } from "@/components/dialogs";
 import { BusinessSettings } from "@/components/business-settings";
 import { OrderCard, statusLabel, timeAgo, type OrderAction } from "@/components/order-card";
 import { demoBusiness, demoMenu, demoOverview, makeDemoOrders } from "@/lib/demo";
@@ -62,7 +62,7 @@ export default function MerchantApp() {
   useEffect(() => {
     if (demo || !business?.id) return;
     let active = true;
-    api<{ items: MenuItem[] }>("/api/merchant/menu").then((data) => { if (active) { setItems(data.items); setMenuError(""); } }).catch((error) => { if (active && !(error instanceof ApiUnauthorizedError)) setMenuError(error.message); });
+    api<{ items: MenuItem[] }>("/api/merchant/menu").then((data) => { if (active) { setItems(data.items); setMenuError(""); } }).catch((error) => { if (active && !(error instanceof Api401Error && error.sessionExpired)) setMenuError(error.message); });
     return () => { active = false; };
   }, [demo, business?.id, refreshKey]);
   useEffect(() => {
@@ -89,7 +89,10 @@ export default function MerchantApp() {
           if ("Notification" in window && Notification.permission === "granted") { try { new Notification("New order on Savour", { body: "Open your workspace to review it." }); } catch { /* Notifications may be unavailable in this browser. */ } }
         }
         lastNewCount.current = newCount; lastNewId.current = overviewData.overview.latestNewOrderId || null; setBusiness((current) => current && current.id === overviewData.business.id && (!current.updatedAt || (overviewData.business.updatedAt && new Date(overviewData.business.updatedAt).getTime() >= new Date(current.updatedAt).getTime())) ? overviewData.business : current); setOverview(overviewData.overview); setOrders(orderData.orders); setHasMore(orderData.hasMore); setSyncError(""); failures = 0;
-      } catch (error) { if (error instanceof ApiUnauthorizedError) return; if (!stopped) { failures++; setSyncError("Couldn’t sync the latest data. We’ll retry automatically."); } }
+      } catch (error) {
+        if (error instanceof Api401Error) { if (!stopped && !error.sessionExpired) setSyncError(error.message); return; }
+        if (!stopped) { failures++; setSyncError("Couldn’t sync the latest data. We’ll retry automatically."); }
+      }
       if (!stopped) timer = setTimeout(poll, Math.min(30000 * 2 ** failures, 120000));
     };
     void poll();

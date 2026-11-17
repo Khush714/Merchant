@@ -95,14 +95,16 @@ export async function currentUser() {
   }
   return { id: result.id, email: result.email, emailVerified: result.emailVerifiedAt !== null };
 }
-export class ApiError extends Error { constructor(message: string, public status = 400) { super(message); } }
+export class ApiError extends Error { constructor(message: string, public status = 400, public code?: string) { super(message); } }
+/** Marks session-expiry 401s so clients can distinguish them from upstream 401s (e.g. a revoked Marketplace token). */
+export const AUTH_REQUIRED_HEADER = "x-savour-auth-required";
 /** Opt-in only: without Resend configured, gating would lock out accounts that cannot receive the link. */
 export function verificationRequired() {
   return (process.env.REQUIRE_EMAIL_VERIFICATION ?? "").trim().toLowerCase() === "true";
 }
 export async function requireUser({ allowUnverified = false }: { allowUnverified?: boolean } = {}) {
   const user = await currentUser();
-  if (!user) throw new ApiError("Please sign in to continue.", 401);
+  if (!user) throw new ApiError("Please sign in to continue.", 401, "AUTH_REQUIRED");
   if (!allowUnverified && verificationRequired() && !user.emailVerified) {
     throw new ApiError("Verify your email before continuing.", 403);
   }
@@ -189,7 +191,7 @@ export async function recordAudit({ request, event, outcome, userId, businessId,
 }
 
 export function fail(error: unknown, request?: NextRequest) {
-  if (error instanceof ApiError) return NextResponse.json({ error: error.message }, { status: error.status });
+  if (error instanceof ApiError) return NextResponse.json({ error: error.message }, { status: error.status, headers: error.code === "AUTH_REQUIRED" ? { [AUTH_REQUIRED_HEADER]: "1" } : undefined });
   logError("api.unhandled_error", error, request ? requestContext(request) : {});
   return NextResponse.json({ error: "Something went wrong. Please try again." }, { status: 500 });
 }
