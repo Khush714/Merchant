@@ -16,6 +16,8 @@ export const businessMarketplaceLinks = pgTable("business_marketplace_links", {
   marketplaceRestaurantName: text("marketplace_restaurant_name").notNull(),
   marketplaceRestaurantSlug: text("marketplace_restaurant_slug").notNull(),
   accessTokenEncrypted: text("access_token_encrypted").notNull(),
+  settlementSyncAttemptedAt: timestamp("settlement_sync_attempted_at", { withTimezone: true }),
+  settlementsSyncedAt: timestamp("settlements_synced_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
@@ -142,13 +144,31 @@ export const orderEvents = pgTable("order_events", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [index("order_events_order_idx").on(table.orderId)]);
 
+/**
+ * Authoritative net-payout records mirrored from Marketplace. One row represents one completed order;
+ * `amount` is the net paise actually deposited (or scheduled for deposit). Re-syncing replaces a row only
+ * when Marketplace supplies a newer `sourceUpdatedAt`, so retries and replays cannot duplicate or roll back money.
+ */
 export const settlements = pgTable("settlements", {
   id: uuid("id").primaryKey().defaultRandom(),
   businessId: uuid("business_id").notNull().references(() => businesses.id),
-  amount: integer("amount").notNull(),
+  netAmount: integer("amount").notNull(),
+  externalId: text("external_id").notNull().default(""),
+  marketplaceOrderId: text("marketplace_order_id").notNull().default(""),
+  orderNumber: integer("order_number"),
+  grossAmount: integer("gross_amount").notNull().default(0),
+  commissionAmount: integer("commission_amount").notNull().default(0),
+  refundAmount: integer("refund_amount").notNull().default(0),
+  adjustmentAmount: integer("adjustment_amount").notNull().default(0),
+  currency: text("currency").notNull().default("INR"),
   status: text("status").notNull(),
   reference: text("reference").notNull().default(""),
   paidAt: timestamp("paid_at", { withTimezone: true }),
+  sourceUpdatedAt: timestamp("source_updated_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (table) => [index("settlements_business_idx").on(table.businessId, table.createdAt)]);
+}, (table) => [
+  index("settlements_business_idx").on(table.businessId, table.createdAt),
+  uniqueIndex("settlements_business_external_idx").on(table.businessId, table.externalId),
+  uniqueIndex("settlements_business_order_idx").on(table.businessId, table.marketplaceOrderId),
+]);
 

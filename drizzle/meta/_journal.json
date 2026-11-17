@@ -43,6 +43,13 @@
       "when": 1794908898815,
       "tag": "0005_email_account_tokens",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794910574197,
+      "tag": "0006_settlement_sync",
+      "breakpoints": true
     }
   ]
 }

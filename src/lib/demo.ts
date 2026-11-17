@@ -23,5 +23,5 @@ export function makeDemoOrders(): Order[] {
 export function demoOverview(orders: Order[]): Overview {
   const counts: Overview["counts"] = { new: 0, accepted: 0, preparing: 0, ready: 0, out_for_delivery: 0, completed: 0, rejected: 0, cancelled: 0 };
   orders.forEach((order) => counts[order.status]++);
-  return { counts, todaySales: 1845000, todayOrders: 38, completedToday: 31, settlements: [] };
+  return { counts, todaySales: 1845000, todayOrders: 38, completedToday: 31, settlements: [], settlementSync: { linked: false, status: "idle", lastSyncedAt: null } };
 }

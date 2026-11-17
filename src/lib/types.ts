@@ -18,10 +18,23 @@ export type Order = {
   paymentMethod: string; prepMinutes: number | null; rejectionReason: string; createdAt: string;
   updatedAt: string; items: OrderItem[];
 };
-export type Settlement = { id: string; amount: number; status: string; reference: string; paidAt: string | null; createdAt: string };
+export type SettlementStatus = "pending" | "paid" | "failed" | "reversed";
+export type Settlement = {
+  id: string; externalId: string; marketplaceOrderId: string; orderNumber: number | null;
+  netAmount: number; grossAmount: number; commissionAmount: number; refundAmount: number; adjustmentAmount: number;
+  currency: string; status: SettlementStatus; reference: string; paidAt: string | null;
+  sourceUpdatedAt: string | null; createdAt: string;
+};
+export type SettlementSync = {
+  linked: boolean;
+  status: "idle" | "synced" | "error";
+  lastSyncedAt: string | null;
+  message?: string;
+};
 export type Overview = {
   counts: Record<OrderStatus, number>;
   todaySales: number; todayOrders: number; completedToday: number; latestNewOrderId?: string | null;
   settlements: Settlement[];
+  settlementSync: SettlementSync;
 };
 export const money = (amount: number) => new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: amount % 100 ? 2 : 0 }).format(amount / 100);

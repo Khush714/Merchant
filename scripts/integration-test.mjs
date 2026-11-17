@@ -170,7 +170,15 @@ try {
   assert.equal((await request("/api/marketplace", { method: "POST", body: { ...vPayload, idempotencyKey: randomUUID() } })).status, 409);
   const edited = await request("/api/merchant/menu", { method: "PATCH", cookie: restaurant.cookie, body: { ...itemBody, id: rItem.data.item.id, name: "Updated meal", price: 30000 } }); assert.equal(edited.data.item.price, 30000);
   const updatedPublicMenu = await request(`/api/marketplace?businessId=${restaurant.business.id}`); assert.equal(updatedPublicMenu.data.items.find((item) => item.id === rItem.data.item.id).price, 30000);
-  const earnings = await request("/api/merchant/overview", { cookie: restaurant.cookie }); assert.equal(earnings.data.overview.todaySales, 50000); assert.equal(earnings.data.overview.completedToday, 1); assert.equal(earnings.data.overview.settlements.length, 0);
+  const settlementExternal = `settle_${run}`, settlementOrder = `order_${run}`;
+  sql(`insert into settlements (business_id, external_id, marketplace_order_id, order_number, amount, gross_amount, commission_amount, refund_amount, adjustment_amount, currency, status, reference, paid_at, source_updated_at) values ('${restaurant.business.id}', '${settlementExternal}', '${settlementOrder}', 2847, 54999, 56700, 1701, 0, 0, 'INR', 'paid', 'PAYOUT_${run}', now(), now())`);
+  const earnings = await request("/api/merchant/overview", { cookie: restaurant.cookie }); assert.equal(earnings.data.overview.todaySales, 50000); assert.equal(earnings.data.overview.completedToday, 1);
+  assert.equal(earnings.data.overview.settlements.length, 1);
+  assert.deepEqual({ ...earnings.data.overview.settlements[0], id: undefined, paidAt: undefined, sourceUpdatedAt: undefined, createdAt: undefined }, { id: undefined, externalId: settlementExternal, marketplaceOrderId: settlementOrder, orderNumber: 2847, netAmount: 54999, grossAmount: 56700, commissionAmount: 1701, refundAmount: 0, adjustmentAmount: 0, currency: "INR", status: "paid", reference: `PAYOUT_${run}`, paidAt: undefined, sourceUpdatedAt: undefined, createdAt: undefined });
+  assert.equal(earnings.data.overview.settlementSync.linked, false);
+  let duplicateSettlementRejected = false;
+  try { sql(`insert into settlements (business_id, external_id, marketplace_order_id, amount, status, source_updated_at) values ('${restaurant.business.id}', 'settle_dup_${run}', '${settlementOrder}', 100, 'paid', now())`); } catch { duplicateSettlementRejected = true; }
+  assert.equal(duplicateSettlementRejected, true);
   // Signing in again from another browser must not disturb the existing session, but signing in with a
   // token already in that browser must rotate it away.
   const extraLogin = await request("/api/auth", { method: "POST", body: { action: "login", email: emails[0], password: `T3st-${run}` } });
@@ -228,7 +236,7 @@ try {
   assert.equal(scalar(`select count(*) from audit_logs where event='auth.verify_email' and outcome='success' and actor_user_id in (${owners})`), "2");
   assert.equal(scalar(`select count(*) from audit_logs where event='auth.reset_password' and outcome='success' and actor_user_id='${vendorId}' and detail->>'sessionsRevoked'='true'`), "1");
   assert.equal(scalar(`select count(*) from audit_logs where event='auth.forgot_password' and actor_email_hash='${hash(missingEmail)}' and detail->>'accountFound'='false'`), "1");
-  console.log("PASS: security headers, registration, approval, marketplace, concurrency, sessions, password change, hashed audit trail, email verification and single-use password reset");
+  console.log("PASS: security headers, registration, approval, marketplace, concurrency, sessions, password change, hashed audit trail, email verification, single-use password reset and authoritative settlement mirror");
 } finally {
   try { sql(`begin; delete from audit_logs where actor_user_id in (${owners}) or business_id in (${shops}) or actor_email_hash in ('${hash(emails[0])}','${hash(emails[1])}','${hash(missingEmail)}') or (event in ('auth.verify_email','auth.reset_password') and outcome='failure'); delete from account_tokens where user_id in (${owners}); delete from order_events where order_id in (${testOrders}); delete from order_items where order_id in (${testOrders}); delete from orders where business_id in (${shops}); delete from menu_items where business_id in (${shops}); delete from settlements where business_id in (${shops}); delete from sessions where user_id in (${owners}); delete from businesses where owner_id in (${owners}); delete from users where id in (${owners}); commit;`); }
   catch (error) { console.error("Could not clean up disposable test records:", error.message); process.exitCode = 1; }
