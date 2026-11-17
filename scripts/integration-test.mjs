@@ -9,11 +9,15 @@ if (!database || !["127.0.0.1", "localhost", "::1"].includes(new URL(database).h
 const run = randomUUID().replaceAll("-", "");
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const emails = [`restaurant-${run}@example.test`, `vendor-${run}@example.test`];
+const missingEmail = `missing-${run}@example.test`;
 const owners = `select id from users where email in ('${emails[0]}','${emails[1]}')`;
 const shops = `select id from businesses where owner_id in (${owners})`;
 const testOrders = `select id from orders where business_id in (${shops})`;
 function sql(statement) { execFileSync("psql", [database, "-v", "ON_ERROR_STOP=1", "-q", "-c", statement], { stdio: "pipe" }); }
 function scalar(statement) { return execFileSync("psql", [database, "-v", "ON_ERROR_STOP=1", "-t", "-A", "-c", statement], { encoding: "utf8" }).trim(); }
+function accountToken(value, email, purpose, expiry = "now() + interval '1 hour'") {
+  sql(`begin; delete from account_tokens where user_id=(select id from users where email='${email}') and purpose='${purpose}'; insert into account_tokens (token_hash, user_id, purpose, expires_at) values ('${hash(value)}', (select id from users where email='${email}'), '${purpose}', ${expiry}); commit;`);
+}
 async function request(path, { method = "GET", cookie, body } = {}) {
   const send = () => fetch(`${base}${path}`, { method, headers: { ...(cookie ? { cookie } : {}), ...(body ? { "content-type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
   let response = await send();
@@ -66,7 +70,7 @@ try {
   assert.match(await missing.text(), /Page not found/);
   const unauth = await request("/api/merchant/orders"); assert.equal(unauth.status, 401);
   assert.equal((await request("/api/admin/approval", { method: "POST", body: { businessId: randomUUID(), status: "approved" } })).status, 403);
-  assert.equal(scalar(`select count(*) from audit_logs where event='admin.approval' and outcome='denied' and detail->>'reason'='invalid_token'`), "1");
+  assert.ok(Number(scalar(`select count(*) from audit_logs where event='admin.approval' and outcome='denied' and detail->>'reason'='invalid_token' and created_at > now() - interval '2 minutes'`)) >= 1);
   assert.equal((await rawRequest("/api/marketplace", { body: "{not json", contentType: "application/json" })).status, 400);
   assert.equal((await rawRequest("/api/marketplace", { body: "businessId=1", contentType: "text/plain" })).status, 415);
   assert.equal((await rawRequest("/api/marketplace", { body: JSON.stringify({ padding: "x".repeat(140 * 1024) }), contentType: "application/json" })).status, 413);
@@ -76,6 +80,34 @@ try {
     assert.equal(scalar(`select count(*) from audit_logs where event='auth.register' and outcome='success' and actor_email_hash='${hash(email)}' and actor_user_id=(select id from users where email='${email}')`), "1");
   }
   assert.equal(scalar(`select count(*) from audit_logs where request_id is null or ip_hash is null or outcome not in ('success','failure','denied')`), "0");
+  // Verification links are hashed at rest, expire and can only be redeemed once.
+  const verifyToken = `v${run}`, vendorVerifyToken = `vv${run}`, expiredToken = `e${run}`;
+  accountToken(verifyToken, emails[0], "verify_email");
+  assert.equal(scalar(`select count(*) from account_tokens where token_hash='${hash(verifyToken)}' and purpose='verify_email' and consumed_at is null`), "1");
+  const verified = await request("/api/auth", { method: "POST", body: { action: "verify-email", token: verifyToken } });
+  assert.equal(verified.status, 200); assert.equal(verified.data.emailVerified, true);
+  assert.equal(scalar(`select email_verified_at is not null from users where email='${emails[0]}'`), "t");
+  assert.equal(scalar(`select consumed_at is not null from account_tokens where token_hash='${hash(verifyToken)}'`), "t");
+  assert.equal((await request("/api/auth", { method: "POST", body: { action: "verify-email", token: verifyToken } })).status, 400);
+  assert.equal((await request("/api/auth", { cookie: restaurant.cookie })).data.user.emailVerified, true);
+  accountToken(expiredToken, emails[0], "verify_email", "now() - interval '1 minute'");
+  assert.equal((await request("/api/auth", { method: "POST", body: { action: "verify-email", token: expiredToken } })).status, 400);
+  // Unknown addresses get the same answer as known ones and never receive a token.
+  const forgot = await request("/api/auth", { method: "POST", body: { action: "forgot-password", email: emails[1] } });
+  assert.equal(forgot.status, 200);
+  assert.equal(scalar(`select count(*) from account_tokens where user_id=(select id from users where email='${emails[1]}') and purpose='reset_password' and consumed_at is null`), "1");
+  const forgotMissing = await request("/api/auth", { method: "POST", body: { action: "forgot-password", email: missingEmail } });
+  assert.equal(forgotMissing.status, 200); assert.deepEqual(forgotMissing.data, forgot.data);
+  // Resending replaces any outstanding verification link; verified accounts get no new one.
+  const resent = await request("/api/auth", { method: "POST", cookie: vendor.cookie, body: { action: "resend-verification" } });
+  assert.equal(resent.status, 200);
+  assert.equal(scalar(`select count(*) from account_tokens where user_id=(select id from users where email='${emails[1]}') and purpose='verify_email' and consumed_at is null`), "1");
+  accountToken(vendorVerifyToken, emails[1], "verify_email");
+  assert.equal((await request("/api/auth", { method: "POST", body: { action: "verify-email", token: vendorVerifyToken } })).status, 200);
+  assert.equal(scalar(`select count(*) from account_tokens where user_id=(select id from users where email='${emails[1]}') and purpose='verify_email' and consumed_at is null`), "0");
+  const alreadyVerified = await request("/api/auth", { method: "POST", cookie: vendor.cookie, body: { action: "resend-verification" } });
+  assert.equal(alreadyVerified.data.sent, false);
+  assert.equal(scalar(`select count(*) from account_tokens where user_id=(select id from users where email='${emails[1]}') and purpose='verify_email' and consumed_at is null`), "0");
   let marketplace = await request("/api/marketplace"); assert.ok(!marketplace.data.businesses.some((b) => [restaurant.business.id, vendor.business.id].includes(b.id)));
   // Simulate the trusted review system in a disposable local database.
   sql(`update businesses set approval_status='approved' where id in (${shops})`);
@@ -176,13 +208,28 @@ try {
   assert.equal((await request("/api/auth", { cookie: changed.cookie })).data.user.email, emails[1]);
   assert.equal((await request("/api/auth", { method: "POST", body: { action: "login", email: emails[1], password: `T3st-${run}` } })).status, 401);
   assert.equal((await request("/api/auth", { method: "POST", body: { action: "login", email: emails[1], password: newPassword } })).status, 200);
+  // A reset link is single use, revokes every session and issues a fresh one for this browser.
+  const resetToken = `p${run}`, resetPassword = `R3s-${run}`;
+  const beforeReset = await request("/api/auth", { method: "POST", body: { action: "login", email: emails[1], password: newPassword } });
+  assert.equal(beforeReset.status, 200);
+  accountToken(resetToken, emails[1], "reset_password");
+  const reset = await request("/api/auth", { method: "POST", cookie: beforeReset.cookie, body: { action: "reset-password", token: resetToken, password: resetPassword } });
+  assert.equal(reset.status, 200); assert.ok(reset.cookie); assert.notEqual(reset.cookie, beforeReset.cookie);
+  assert.equal((await request("/api/auth", { cookie: beforeReset.cookie })).data.user, null);
+  assert.equal((await request("/api/auth", { method: "POST", body: { action: "login", email: emails[1], password: newPassword } })).status, 401);
+  assert.equal((await request("/api/auth", { method: "POST", body: { action: "login", email: emails[1], password: resetPassword } })).status, 200);
+  assert.equal((await request("/api/auth", { method: "POST", body: { action: "reset-password", token: resetToken, password: resetPassword } })).status, 400);
+  assert.equal(scalar(`select consumed_at is not null from account_tokens where token_hash='${hash(resetToken)}'`), "t");
   const vendorId = scalar(`select id from users where email='${emails[1]}'`);
-  assert.equal(scalar(`select count(*) from audit_logs where event='auth.login' and outcome='failure' and actor_email_hash='${hash(emails[1])}'`), "1");
+  assert.equal(scalar(`select count(*) from audit_logs where event='auth.login' and outcome='failure' and actor_email_hash='${hash(emails[1])}'`), "2");
   assert.equal(scalar(`select count(*) from audit_logs where event='auth.change_password' and outcome='failure' and actor_user_id='${vendorId}' and detail->>'reason'='invalid_current_password'`), "1");
   assert.equal(scalar(`select count(*) from audit_logs where event='auth.change_password' and outcome='success' and actor_user_id='${vendorId}' and detail->>'sessionsRevoked'='true'`), "1");
-  assert.equal(scalar(`select count(*) from audit_logs where detail::text like '%T3st-%' or detail::text like '%N3w-%' or detail::text like '%@example.test%'`), "0");
-  console.log("PASS: security headers and 404 boundary, registration, approval, shared marketplace, idempotency, isolation, concurrent lifecycle, menu, earnings, sessions, password change and hashed security audit trail");
+  assert.equal(scalar(`select count(*) from audit_logs where detail::text like '%T3st-%' or detail::text like '%N3w-%' or detail::text like '%R3s-%' or detail::text like '%@example.test%'`), "0");
+  assert.equal(scalar(`select count(*) from audit_logs where event='auth.verify_email' and outcome='success' and actor_user_id in (${owners})`), "2");
+  assert.equal(scalar(`select count(*) from audit_logs where event='auth.reset_password' and outcome='success' and actor_user_id='${vendorId}' and detail->>'sessionsRevoked'='true'`), "1");
+  assert.equal(scalar(`select count(*) from audit_logs where event='auth.forgot_password' and actor_email_hash='${hash(missingEmail)}' and detail->>'accountFound'='false'`), "1");
+  console.log("PASS: security headers, registration, approval, marketplace, concurrency, sessions, password change, hashed audit trail, email verification and single-use password reset");
 } finally {
-  try { sql(`begin; delete from audit_logs where actor_user_id in (${owners}) or business_id in (${shops}); delete from order_events where order_id in (${testOrders}); delete from order_items where order_id in (${testOrders}); delete from orders where business_id in (${shops}); delete from menu_items where business_id in (${shops}); delete from settlements where business_id in (${shops}); delete from sessions where user_id in (${owners}); delete from businesses where owner_id in (${owners}); delete from users where id in (${owners}); commit;`); }
+  try { sql(`begin; delete from audit_logs where actor_user_id in (${owners}) or business_id in (${shops}) or actor_email_hash in ('${hash(emails[0])}','${hash(emails[1])}','${hash(missingEmail)}') or (event in ('auth.verify_email','auth.reset_password') and outcome='failure'); delete from account_tokens where user_id in (${owners}); delete from order_events where order_id in (${testOrders}); delete from order_items where order_id in (${testOrders}); delete from orders where business_id in (${shops}); delete from menu_items where business_id in (${shops}); delete from settlements where business_id in (${shops}); delete from sessions where user_id in (${owners}); delete from businesses where owner_id in (${owners}); delete from users where id in (${owners}); commit;`); }
   catch (error) { console.error("Could not clean up disposable test records:", error.message); process.exitCode = 1; }
 }

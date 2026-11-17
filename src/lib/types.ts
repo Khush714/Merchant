@@ -1,3 +1,4 @@
+export type AuthUser = { id: string; email: string; emailVerified: boolean };
 export type BusinessType = "restaurant" | "vendor";
 export type OrderStatus = "new" | "accepted" | "preparing" | "ready" | "out_for_delivery" | "completed" | "rejected" | "cancelled";
 export type Business = {

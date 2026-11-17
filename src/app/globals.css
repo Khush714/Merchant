@@ -20,3 +20,13 @@
 .fulfilment-option:hover:not(:disabled){background:#fff;color:#25312f}
 .fulfilment-option.selected{background:#fff;color:#25312f;box-shadow:0 1px 4px #20342a14}
 .fulfilment-option:disabled{opacity:.4;cursor:not-allowed}
+.account-page{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:var(--soft)}
+.account-card{width:min(100%,420px);background:#fff;border:1px solid var(--line);border-radius:16px;padding:28px;box-shadow:0 12px 40px #25312f0d}
+.account-card h1{font-size:22px;margin:0 0 10px}
+.account-card p{color:#7e8985;line-height:1.6;font-size:13px}
+.account-card .btn{margin-top:18px}
+.verification-banner{display:flex;align-items:center;gap:10px;padding:10px 24px;background:#fffaf3;border-bottom:1px solid #f2e6d3;color:#8a6b3d;font-size:12px}
+.verification-banner>div{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
+.verification-banner span{color:#9b8465}
+.verification-banner button{margin-left:auto;border:0;background:transparent;color:#9b6a2f;font-weight:700;text-decoration:underline;padding:4px}
+@media(max-width:700px){.verification-banner{padding:10px 17px;flex-wrap:wrap}.verification-banner button{margin-left:0}}

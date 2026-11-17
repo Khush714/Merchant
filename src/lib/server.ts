@@ -79,7 +79,7 @@ export async function currentUser() {
   if (!token) return null;
   const tokenHash = sha256(token);
   const now = new Date();
-  const [result] = await db.select({ id: users.id, email: users.email, createdAt: sessions.createdAt, expiresAt: sessions.expiresAt }).from(sessions)
+  const [result] = await db.select({ id: users.id, email: users.email, emailVerifiedAt: users.emailVerifiedAt, createdAt: sessions.createdAt, expiresAt: sessions.expiresAt }).from(sessions)
     .innerJoin(users, eq(sessions.userId, users.id))
     .where(eq(sessions.tokenHash, tokenHash)).limit(1);
   if (!result) return null;
@@ -93,7 +93,7 @@ export async function currentUser() {
     const expiresAt = new Date(Math.min(now.getTime() + SESSION_IDLE_SECONDS * 1000, absoluteExpiry));
     await db.update(sessions).set({ expiresAt }).where(eq(sessions.tokenHash, tokenHash));
   }
-  return { id: result.id, email: result.email };
+  return { id: result.id, email: result.email, emailVerified: result.emailVerifiedAt !== null };
 }
 export class ApiError extends Error { constructor(message: string, public status = 400) { super(message); } }
 export async function requireUser() {

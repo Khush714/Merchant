@@ -1,7 +1,7 @@
 "use client";
 import { useState, type FormEvent, type ReactNode } from "react";
 import { ArrowLeft, ArrowRight, CheckCircle2, ChefHat, Store, X } from "lucide-react";
-import type { Business, BusinessType, MenuItem, Order } from "@/lib/types";
+import type { AuthUser, Business, BusinessType, MenuItem, Order } from "@/lib/types";
 import { money } from "@/lib/types";
 import type { OrderAction } from "@/components/order-card";
 
@@ -16,16 +16,24 @@ export function Modal({ title, subtitle, onClose, children, wide = false }: { ti
     <div className="modal-heading"><div><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div><button className="icon-button" aria-label="Close" onClick={onClose}><X size={20} /></button></div>{children}
   </section></div>;
 }
-export function AccountModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (data: { user: { id: string; email: string }; business: Business | null }) => void }) {
-  const [mode, setMode] = useState<"register" | "login">("register"), [email, setEmail] = useState(""), [password, setPassword] = useState(""), [error, setError] = useState(""), [busy, setBusy] = useState(false);
+export function AccountModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (data: { user: AuthUser; business: Business | null }) => void }) {
+  const [mode, setMode] = useState<"register" | "login" | "forgot">("register"), [email, setEmail] = useState(""), [password, setPassword] = useState(""), [error, setError] = useState(""), [message, setMessage] = useState(""), [busy, setBusy] = useState(false);
   async function submit(event: FormEvent) {
-    event.preventDefault(); setBusy(true); setError("");
-    try { onSuccess(await api("/api/auth", { method: "POST", body: JSON.stringify({ action: mode, email, password }) })); }
-    catch (err) { setError(err instanceof Error ? err.message : "Please try again."); } finally { setBusy(false); }
+    event.preventDefault(); setBusy(true); setError(""); setMessage("");
+    try {
+      if (mode === "forgot") {
+        const data = await api<{ ok: boolean; sent: boolean; configured: boolean }>("/api/auth", { method: "POST", body: JSON.stringify({ action: "forgot-password", email }) });
+        setMessage(data.configured ? data.sent ? "If that email is registered, we’ve sent a reset link." : "We couldn’t send the email. Please try again later." : "Email delivery isn’t configured in this environment.");
+      } else {
+        onSuccess(await api<{ user: AuthUser; business: Business | null }>("/api/auth", { method: "POST", body: JSON.stringify({ action: mode, email, password }) }));
+      }
+    } catch (err) { setError(err instanceof Error ? err.message : "Please try again."); } finally { setBusy(false); }
   }
-  return <Modal title={mode === "register" ? "Let’s get you set up" : "Welcome back"} subtitle={mode === "register" ? "Create your merchant account to get started." : "Sign in to your merchant workspace."} onClose={onClose}>
-    <form onSubmit={submit} className="form-stack"><label>Email address<input type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@business.com" /></label><label>Password<input type="password" autoComplete={mode === "register" ? "new-password" : "current-password"} required minLength={8} maxLength={128} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="At least 8 characters" /></label>{error && <p className="form-error">{error}</p>}<button className="btn btn-primary full large" disabled={busy}>{busy ? "Please wait…" : mode === "register" ? "Create account" : "Sign in"} <ArrowRight size={17} /></button></form>
-    <p className="modal-bottom">{mode === "register" ? "Already have an account?" : "New to Savour?"} <button onClick={() => { setMode(mode === "register" ? "login" : "register"); setError(""); }}>{mode === "register" ? "Sign in" : "Create account"}</button></p>
+  const forgot = mode === "forgot";
+  return <Modal title={forgot ? "Reset your password" : mode === "register" ? "Let’s get you set up" : "Welcome back"} subtitle={forgot ? "We’ll email you a link to choose a new password." : mode === "register" ? "Create your merchant account to get started." : "Sign in to your merchant workspace."} onClose={onClose}>
+    <form onSubmit={submit} className="form-stack"><label>Email address<input type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@business.com" /></label>{!forgot && <label>Password<input type="password" autoComplete={mode === "register" ? "new-password" : "current-password"} required minLength={8} maxLength={128} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="At least 8 characters" /></label>}{error && <p className="form-error">{error}</p>}{message && <p className="info-box">{message}</p>}<button className="btn btn-primary full large" disabled={busy}>{busy ? "Please wait…" : forgot ? "Send reset link" : mode === "register" ? "Create account" : "Sign in"} <ArrowRight size={17} /></button></form>
+    <p className="modal-bottom">{forgot ? "Remembered your password?" : mode === "register" ? "Already have an account?" : "New to Savour?"} <button onClick={() => { setMode(forgot ? "login" : mode === "register" ? "login" : "register"); setError(""); setMessage(""); }}>{forgot ? "Back to sign in" : mode === "register" ? "Sign in" : "Create account"}</button></p>
+    {!forgot && <p className="modal-bottom"><button onClick={() => { setMode("forgot"); setError(""); setMessage(""); }}>Forgot password?</button></p>}
   </Modal>;
 }
 export function PasswordModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {

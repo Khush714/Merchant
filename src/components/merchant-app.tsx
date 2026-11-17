@@ -2,15 +2,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { ArrowDownRight, ArrowRight, ArrowUpRight, Bell, BellRing, Bike, BookOpen, Check, CheckCircle2, ChefHat, ChevronDown, ChevronLeft, ChevronRight, CircleDollarSign, Clock3, CreditCard, ExternalLink, Headphones, HelpCircle, Home, Info, KeyRound, LayoutGrid, LogOut, Menu as MenuIcon, MoreHorizontal, PackageCheck, Plus, Search, Settings2, ShoppingBag, Sparkles, Store, Trash2, UtensilsCrossed, WifiOff, X } from "lucide-react";
+import { ArrowDownRight, ArrowRight, ArrowUpRight, Bell, BellRing, Bike, BookOpen, Check, CheckCircle2, ChefHat, ChevronDown, ChevronLeft, ChevronRight, CircleDollarSign, Clock3, CreditCard, ExternalLink, Headphones, HelpCircle, Home, Info, KeyRound, LayoutGrid, LogOut, Mail, Menu as MenuIcon, MoreHorizontal, PackageCheck, Plus, Search, Settings2, ShoppingBag, Sparkles, Store, Trash2, UtensilsCrossed, WifiOff, X } from "lucide-react";
 import { AccountModal, api, DecisionModal, FulfilmentModal, MenuModal, Modal, PasswordModal, SetupModal, type MenuInput } from "@/components/dialogs";
 import { BusinessSettings } from "@/components/business-settings";
 import { OrderCard, statusLabel, timeAgo, type OrderAction } from "@/components/order-card";
 import { demoBusiness, demoMenu, demoOverview, makeDemoOrders } from "@/lib/demo";
-import { money, type Business, type MenuItem, type Order, type OrderStatus, type Overview } from "@/lib/types";
+import { money, type AuthUser, type Business, type MenuItem, type Order, type OrderStatus, type Overview } from "@/lib/types";
 
 type Page = "home" | "orders" | "menu" | "earnings" | "more";
-type User = { id: string; email: string };
+type User = AuthUser;
 type AuthData = { user: User | null; business: Business | null };
 type Filter = "active" | "all" | "new" | "accepted" | "preparing" | "ready" | "out_for_delivery" | "completed" | "cancelled";
 const emptyOverview: Overview = { counts: { new: 0, accepted: 0, preparing: 0, ready: 0, out_for_delivery: 0, completed: 0, cancelled: 0, rejected: 0 }, todaySales: 0, todayOrders: 0, completedToday: 0, settlements: [] };
@@ -37,7 +37,7 @@ export default function MerchantApp() {
   const [search, setSearch] = useState(""), [debouncedSearch, setDebouncedSearch] = useState(""), [from, setFrom] = useState(""), [to, setTo] = useState(""), [orderPage, setOrderPage] = useState(1), [hasMore, setHasMore] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false), [profileOpen, setProfileOpen] = useState(false), [passwordOpen, setPasswordOpen] = useState(false), [setupOpen, setSetupOpen] = useState(false), [menuDialog, setMenuDialog] = useState<{ item: MenuItem | null } | null>(null), [decision, setDecision] = useState<{ order: Order; action: OrderAction } | null>(null), [fulfilmentDialog, setFulfilmentDialog] = useState<{ order: Order; fulfilment: "pickup" | "delivery" } | null>(null), [fulfilmentBusy, setFulfilmentBusy] = useState(""), [details, setDetails] = useState<Order | null>(null), [notificationsOpen, setNotificationsOpen] = useState(false), [helpOpen, setHelpOpen] = useState(false);
   const online = useSyncExternalStore(subscribeToNetwork, getNetworkStatus, () => true);
-  const [syncError, setSyncError] = useState(""), [toast, setToast] = useState(""), [busyStore, setBusyStore] = useState(false), [busyItem, setBusyItem] = useState(""), [refreshKey, setRefreshKey] = useState(0), [soundEnabled, setSoundEnabled] = useState(() => typeof window !== "undefined" && localStorage.getItem("savour-sound") === "on"), [notificationPermission, setNotificationPermission] = useState(() => typeof Notification !== "undefined" ? Notification.permission : "default"), [menuError, setMenuError] = useState("");
+  const [syncError, setSyncError] = useState(""), [toast, setToast] = useState(""), [busyStore, setBusyStore] = useState(false), [busyItem, setBusyItem] = useState(""), [refreshKey, setRefreshKey] = useState(0), [soundEnabled, setSoundEnabled] = useState(() => typeof window !== "undefined" && localStorage.getItem("savour-sound") === "on"), [notificationPermission, setNotificationPermission] = useState(() => typeof Notification !== "undefined" ? Notification.permission : "default"), [menuError, setMenuError] = useState(""), [resendingVerification, setResendingVerification] = useState(false);
   const lastNewCount = useRef<number | null>(null), lastNewId = useRef<string | null>(null), actionBusyRef = useRef<Set<string>>(new Set());
   const [actionBusy, setActionBusy] = useState<Record<string, boolean>>({});
 
@@ -208,6 +208,14 @@ export default function MerchantApp() {
   async function endSession(action: "logout" | "logout-all", message: string) { try { await api("/api/auth", { method: "POST", body: JSON.stringify({ action }) }); setDemo(true); setUser(null); setBusiness(demoBusiness); setOrders(makeDemoOrders()); setItems(demoMenu); setPage("home"); setToast(message); } catch (err) { setToast(err instanceof Error ? err.message : "Could not sign out."); } }
   function signOut() { return endSession("logout", "Signed out."); }
   function signOutEverywhere() { return endSession("logout-all", "Signed out of all devices."); }
+  async function resendVerification() {
+    setResendingVerification(true);
+    try {
+      const data = await api<{ sent: boolean; configured: boolean }>("/api/auth", { method: "POST", body: JSON.stringify({ action: "resend-verification" }) });
+      setToast(data.configured ? data.sent ? "Verification email sent." : "We couldn’t send the email. Please try again later." : "Email delivery isn’t configured in this environment.");
+    } catch (err) { setToast(err instanceof Error ? err.message : "Could not send verification email."); }
+    finally { setResendingVerification(false); }
+  }
   function switchDemoMode() { if (!business) return; const next = business.type === "restaurant" ? "vendor" : "restaurant"; setBusiness({ ...business, type: next }); if (page === "more") setPage("home"); setToast(`Exploring ${next === "vendor" ? "street vendor" : "restaurant"} mode with sample data.`); }
   function navigate(next: Page) { setPage(next); if (next === "orders") { setOrderPage(1); setOrderFilter("active"); } window.scrollTo({ top: 0, behavior: "smooth" }); }
   const storeSwitch = <button className={`switch ${business?.isOpen ? "on" : ""}`} role="switch" aria-checked={!!business?.isOpen} aria-label="Store open for orders" disabled={!business || busyStore} onClick={toggleStore}><span /></button>;
@@ -222,6 +230,7 @@ export default function MerchantApp() {
       <div className="mobile-topbar"><div className="mobile-brand"><span className="brand-mark"><UtensilsCrossed size={18} /></span><strong>savour<span>.</span></strong><small>PARTNER</small></div><div className="mobile-top-actions"><button className="icon-button" aria-label="Notifications" onClick={() => setNotificationsOpen(true)}><Bell size={20} /></button><button className="store-avatar small-avatar avatar-button" aria-label="Account" onClick={() => demo ? setAccountOpen(true) : setProfileOpen(true)}>{initials(name)}</button></div></div>
       {!online && <div className="connection-banner"><WifiOff size={16} /> You’re offline. New orders and changes won’t sync until you reconnect.</div>}
       {online && syncError && <div className="connection-banner"><WifiOff size={16} /> {syncError} <button onClick={() => setRefreshKey((n) => n + 1)}>Retry</button></div>}
+      {!demo && user && !user.emailVerified && <div className="verification-banner"><Mail size={16} /><div><strong>Verify your email</strong><span>Confirm your address to keep your merchant account secure.</span></div><button disabled={resendingVerification} onClick={() => void resendVerification()}>{resendingVerification ? "Sending…" : "Resend verification email"}</button></div>}
       {demo && <div className="demo-banner"><div><Sparkles size={15} /><strong>Explore your sample workspace</strong><span>Sample data · changes are temporary</span></div><div><button className="demo-mode-button" onClick={switchDemoMode}>Try {vendor ? "restaurant" : "street vendor"} mode</button><button className="demo-signup" onClick={() => setAccountOpen(true)}>Get started <ArrowRight size={14} /></button></div></div>}
       <div className="content-wrap">
         {page === "home" && <>
@@ -247,7 +256,7 @@ export default function MerchantApp() {
     </main>
     <nav className="bottom-nav" aria-label="Mobile navigation">{visibleNav.map(({ id, label, icon: Icon }) => <button key={id} className={page === id ? "active" : ""} onClick={() => navigate(id)}><span><Icon size={21} strokeWidth={page === id ? 2.3 : 1.8} />{id === "orders" && stats.counts.new > 0 && <i />}</span><small>{label}</small></button>)}</nav>
     {toast && <div className="toast" role="status"><Info size={17} /> {toast}<button onClick={() => setToast("")} aria-label="Dismiss"><X size={15} /></button></div>}
-    {profileOpen && <Modal title="Your account" subtitle={user?.email} onClose={() => setProfileOpen(false)}><div className="form-stack"><div className="info-box"><strong>{name}</strong><br />{vendor ? "Street vendor" : "Restaurant partner"} · {business?.approvalStatus === "approved" ? "Approved" : "Listing not live"}</div><button className="btn btn-outline full large" onClick={() => { setProfileOpen(false); navigate("more"); }}><Settings2 size={16} /> Business details & hours</button><button className="btn btn-outline full large" onClick={() => { setProfileOpen(false); setPasswordOpen(true); }}><KeyRound size={16} /> Change password</button><button className="btn btn-outline full large" onClick={() => { setProfileOpen(false); void signOut(); }}><LogOut size={16} /> Sign out</button><button className="btn btn-outline full large" onClick={() => { setProfileOpen(false); void signOutEverywhere(); }}><LogOut size={16} /> Sign out of all devices</button></div></Modal>}
+    {profileOpen && <Modal title="Your account" subtitle={user?.email} onClose={() => setProfileOpen(false)}><div className="form-stack"><div className="info-box"><strong>{name}</strong><br />{vendor ? "Street vendor" : "Restaurant partner"} · {business?.approvalStatus === "approved" ? "Approved" : "Listing not live"}</div><button className="btn btn-outline full large" onClick={() => { setProfileOpen(false); navigate("more"); }}><Settings2 size={16} /> Business details & hours</button>{user && !user.emailVerified && <button className="btn btn-outline full large" onClick={() => { setProfileOpen(false); void resendVerification(); }}><Mail size={16} /> Resend verification email</button>}<button className="btn btn-outline full large" onClick={() => { setProfileOpen(false); setPasswordOpen(true); }}><KeyRound size={16} /> Change password</button><button className="btn btn-outline full large" onClick={() => { setProfileOpen(false); void signOut(); }}><LogOut size={16} /> Sign out</button><button className="btn btn-outline full large" onClick={() => { setProfileOpen(false); void signOutEverywhere(); }}><LogOut size={16} /> Sign out of all devices</button></div></Modal>}
     {accountOpen && <AccountModal onClose={() => setAccountOpen(false)} onSuccess={activate} />}
     {passwordOpen && <PasswordModal onClose={() => setPasswordOpen(false)} onSuccess={() => { setPasswordOpen(false); setToast("Password changed. Other devices were signed out."); }} />}
     {setupOpen && <SetupModal initial={business && !demo ? business : null} onClose={() => setSetupOpen(false)} onBusiness={(value) => { setBusiness(value); setDemo(false); }} />}
