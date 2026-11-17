@@ -59,6 +59,10 @@ try {
   assert.equal(health.headers.get("x-frame-options"), "DENY");
   assert.equal(health.headers.get("referrer-policy"), "strict-origin-when-cross-origin");
   assert.match(health.headers.get("strict-transport-security") ?? "", /max-age=/);
+  assert.equal((await fetch(`${base}/`)).status, 200);
+  const missing = await fetch(`${base}/this-route-does-not-exist`);
+  assert.equal(missing.status, 404);
+  assert.match(await missing.text(), /Page not found/);
   const unauth = await request("/api/merchant/orders"); assert.equal(unauth.status, 401);
   assert.equal((await request("/api/admin/approval", { method: "POST", body: { businessId: randomUUID(), status: "approved" } })).status, 403);
   assert.equal((await rawRequest("/api/marketplace", { body: "{not json", contentType: "application/json" })).status, 400);
@@ -165,7 +169,7 @@ try {
   assert.equal((await request("/api/auth", { cookie: changed.cookie })).data.user.email, emails[1]);
   assert.equal((await request("/api/auth", { method: "POST", body: { action: "login", email: emails[1], password: `T3st-${run}` } })).status, 401);
   assert.equal((await request("/api/auth", { method: "POST", body: { action: "login", email: emails[1], password: newPassword } })).status, 200);
-  console.log("PASS: security headers, restaurant and vendor registration, draft resumption, approval, shared marketplace, idempotency, isolation, concurrent pickup and delivery lifecycle, scheduled availability, menu, authoritative earnings, session rotation, sign-out-all, sliding idle timeout, absolute lifetime and password change");
+  console.log("PASS: security headers and 404 boundary, restaurant and vendor registration, draft resumption, approval, shared marketplace, idempotency, isolation, concurrent pickup and delivery lifecycle, scheduled availability, menu, authoritative earnings, session rotation, sign-out-all, sliding idle timeout, absolute lifetime and password change");
 } finally {
   try { sql(`begin; delete from order_events where order_id in (${testOrders}); delete from order_items where order_id in (${testOrders}); delete from orders where business_id in (${shops}); delete from menu_items where business_id in (${shops}); delete from settlements where business_id in (${shops}); delete from sessions where user_id in (${owners}); delete from businesses where owner_id in (${owners}); delete from users where id in (${owners}); commit;`); }
   catch (error) { console.error("Could not clean up disposable test records:", error.message); process.exitCode = 1; }
