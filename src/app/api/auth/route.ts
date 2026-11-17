@@ -2,15 +2,23 @@ import { eq } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { businesses, users } from "@/db/schema";
+import { getMarketplaceLink } from "@/lib/marketplace-bridge";
 import { ApiError, createSession, currentUser, deleteSession, fail, hashPassword, rateLimit, sameOrigin, textValue, verifyPassword } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
+
+/** A paired Marketplace listing is already live; the local approval flag only tracks unlinked setup. */
+async function withListingStatus<T extends { id: string; approvalStatus: string }>(business: T | undefined | null) {
+  if (!business) return null;
+  return (await getMarketplaceLink(business.id)) ? { ...business, approvalStatus: "approved" as const } : business;
+}
+
 export async function GET() {
   try {
     const user = await currentUser();
     if (!user) return NextResponse.json({ user: null, business: null });
     const [business] = await db.select().from(businesses).where(eq(businesses.ownerId, user.id)).limit(1);
-    return NextResponse.json({ user, business: business ?? null });
+    return NextResponse.json({ user, business: await withListingStatus(business) });
   } catch (error) { return fail(error); }
 }
 export async function POST(request: NextRequest) {
@@ -40,7 +48,7 @@ export async function POST(request: NextRequest) {
       const [record] = await db.select().from(users).where(eq(users.email, email)).limit(1);
       if (!record || !(await verifyPassword(password, record.passwordHash))) throw new ApiError("Incorrect email or password.", 401);
       const [business] = await db.select().from(businesses).where(eq(businesses.ownerId, record.id)).limit(1);
-      const response = NextResponse.json({ user: { id: record.id, email: record.email }, business: business ?? null });
+      const response = NextResponse.json({ user: { id: record.id, email: record.email }, business: await withListingStatus(business) });
       await createSession(record.id, response);
       return response;
     }

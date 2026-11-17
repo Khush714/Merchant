@@ -15,6 +15,9 @@ export async function GET() {
       const mappedBusiness = {
         ...business,
         name: restaurant.name || business.name,
+        // A linked business already has a live Marketplace listing; the local
+        // approval flag is a legacy setup field and must not mark it as pending.
+        approvalStatus: "approved",
         isOpen: Boolean(restaurant.isActive),
         hoursEnabled: Boolean(restaurant.merchantHoursEnabled),
         opensAt: restaurant.merchantOpensAt || business.opensAt,
@@ -24,7 +27,7 @@ export async function GET() {
       };
       const overview = remote.overview ?? {};
       return NextResponse.json({ business: mappedBusiness, overview: {
-        counts: overview.counts ?? { new: 0, accepted: 0, preparing: 0, ready: 0, completed: 0, rejected: 0, cancelled: 0 },
+        counts: overview.counts ?? { new: 0, accepted: 0, preparing: 0, ready: 0, out_for_delivery: 0, completed: 0, rejected: 0, cancelled: 0 },
         todaySales: Number(overview.todaySales ?? 0), todayOrders: Number(overview.todayOrders ?? 0),
         completedToday: Number(overview.completedToday ?? 0), latestNewOrderId: overview.latestNewOrderId ?? null,
         settlements: overview.settlements ?? [],
@@ -39,7 +42,7 @@ export async function GET() {
       db.select().from(settlements).where(eq(settlements.businessId, business.id)).orderBy(desc(settlements.createdAt)).limit(20),
       db.select({ id: orders.id }).from(orders).where(and(eq(orders.businessId, business.id), eq(orders.status, "new"))).orderBy(desc(orders.createdAt)).limit(1),
     ]);
-    const counts: Record<string, number> = { new: 0, accepted: 0, preparing: 0, ready: 0, completed: 0, rejected: 0, cancelled: 0 };
+    const counts: Record<string, number> = { new: 0, accepted: 0, preparing: 0, ready: 0, out_for_delivery: 0, completed: 0, rejected: 0, cancelled: 0 };
     groups.forEach((group) => { if (group.status in counts) counts[group.status] = group.count; });
     return NextResponse.json({ business, overview: { counts, todaySales: completed.total, todayOrders: today.count, completedToday: completed.count, latestNewOrderId: latestNew?.id ?? null, settlements: settlementRows } });
   } catch (error) { return fail(error); }

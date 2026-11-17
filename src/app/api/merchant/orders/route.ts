@@ -6,11 +6,11 @@ import { getMarketplaceLink, marketplaceFetch } from "@/lib/marketplace-bridge";
 import { ApiError, fail, requireBusiness, sameOrigin, textValue } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
-const statuses = ["new", "accepted", "preparing", "ready", "completed", "rejected", "cancelled"];
-const transitions: Record<string, string[]> = { new: ["accepted", "rejected"], accepted: ["preparing"], preparing: ["ready"], ready: ["completed"] };
+const statuses = ["new", "accepted", "preparing", "ready", "out_for_delivery", "completed", "rejected", "cancelled"];
+const transitions: Record<string, string[]> = { new: ["accepted", "rejected"], accepted: ["preparing"], preparing: ["ready"], ready: ["out_for_delivery", "completed"], out_for_delivery: ["completed"] };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const toMarketplaceStatus: Record<string, string> = { new: "PLACED", accepted: "ACCEPTED", preparing: "PREPARING", ready: "READY", completed: "COMPLETED", rejected: "REJECTED", cancelled: "CANCELLED" };
-const fromMarketplaceStatus: Record<string, string> = Object.fromEntries(Object.entries(toMarketplaceStatus).map(([local, remote]) => [remote, local]));
+const toMarketplaceStatus: Record<string, string> = { new: "PLACED", accepted: "ACCEPTED", preparing: "PREPARING", ready: "READY", out_for_delivery: "OUT_FOR_DELIVERY", completed: "COMPLETED", rejected: "REJECTED", cancelled: "CANCELLED" };
+const fromMarketplaceStatus: Record<string, string> = { ...Object.fromEntries(Object.entries(toMarketplaceStatus).map(([local, remote]) => [remote, local])), DELIVERED: "completed" };
 function mapMarketplaceOrder(order: any, businessId: string) {
   return {
     id: String(order.code), orderNumber: String(order.code), businessId,
@@ -50,7 +50,7 @@ export async function GET(request: NextRequest) {
     const page = Math.max(1, Math.min(1000, Number(p.get("page")) || 1));
     const limit = Math.max(1, Math.min(50, Number(p.get("limit")) || 20));
     const filters: SQL[] = [eq(orders.businessId, business.id)];
-    if (status === "active") filters.push(inArray(orders.status, ["new", "accepted", "preparing", "ready"]));
+    if (status === "active") filters.push(inArray(orders.status, ["new", "accepted", "preparing", "ready", "out_for_delivery"]));
     else if (status === "cancelled") filters.push(inArray(orders.status, ["cancelled", "rejected"]));
     else if (status !== "all") { if (!statuses.includes(status)) throw new ApiError("Invalid status."); filters.push(eq(orders.status, status)); }
     if (search) filters.push(sql`${orders.orderNumber}::text LIKE ${`%${search.replace(/[^0-9]/g, "")}%`}`);
@@ -66,6 +66,48 @@ export async function GET(request: NextRequest) {
 export async function PATCH(request: NextRequest) {
   try {
     sameOrigin(request); const { user, business } = await requireBusiness(); const body = await request.json();
+    if (body.fulfilment !== undefined) {
+      const fulfilment = body.fulfilment;
+      if (fulfilment !== "pickup" && fulfilment !== "delivery") throw new ApiError("Choose pickup or delivery.");
+      const addressText = textValue(body.addressText, 500);
+      if (await getMarketplaceLink(business.id)) {
+        const orderCode = typeof body.orderCode === "string" ? body.orderCode : typeof body.id === "string" ? body.id : "";
+        if (!orderCode) throw new ApiError("Order not found.", 404);
+        const remote = await marketplaceFetch<any>(business.id, "/api/integration/merchant/orders", {
+          method: "PATCH",
+          body: JSON.stringify({ orderCode, fulfilment, ...(addressText ? { addressText } : {}) }),
+        });
+        return NextResponse.json({
+          order: remote.order
+            ? { ...remote.order, id: String(remote.order.code), fulfilment: remote.order.fulfilment === "pickup" ? "pickup" : fulfilment, deliveryAddress: remote.order.addressText || addressText }
+            : { id: orderCode, fulfilment, deliveryAddress: addressText },
+        });
+      }
+      if (typeof body.id !== "string" || !uuid.test(body.id)) throw new ApiError("Order not found.", 404);
+      const updated = await db.transaction(async (tx) => {
+        const [current] = await tx.select().from(orders).where(and(eq(orders.id, body.id), eq(orders.businessId, business.id))).limit(1);
+        if (!current) throw new ApiError("Order not found.", 404);
+        if (["completed", "rejected", "cancelled"].includes(current.status)) throw new ApiError("This order is closed and its fulfilment can no longer be changed.", 409);
+        if (current.status === "out_for_delivery" && fulfilment === "pickup") throw new ApiError("This delivery is already with the rider and can no longer be changed to pickup.", 409);
+        if (fulfilment === "pickup" && !business.pickupEnabled) throw new ApiError("Pickup is turned off in your business settings.", 409);
+        if (fulfilment === "delivery" && !business.deliveryEnabled) throw new ApiError("Delivery is turned off in your business settings.", 409);
+        const nextAddress = addressText || current.deliveryAddress;
+        if (fulfilment === "delivery" && !nextAddress.trim()) throw new ApiError("Add a delivery address before switching to delivery.");
+        if (fulfilment === current.fulfilment && !addressText) return current;
+        const [result] = await tx.update(orders).set({
+          fulfilment,
+          ...(fulfilment === "delivery" ? { deliveryAddress: nextAddress } : {}),
+          updatedAt: new Date(),
+        }).where(and(eq(orders.id, body.id), eq(orders.businessId, business.id))).returning();
+        if (!result) throw new ApiError("Order not found.", 404);
+        await tx.insert(orderEvents).values({
+          orderId: result.id, actorId: user.id, fromStatus: current.status, toStatus: current.status,
+          reason: fulfilment === current.fulfilment ? "Delivery address updated by merchant" : `Fulfilment changed from ${current.fulfilment} to ${fulfilment} by merchant`,
+        });
+        return result;
+      });
+      return NextResponse.json({ order: updated });
+    }
     if (await getMarketplaceLink(business.id)) {
       const orderCode = typeof body.orderCode === "string" ? body.orderCode : typeof body.id === "string" ? body.id : "";
       const expectedStatus = typeof body.expectedStatus === "string" ? body.expectedStatus : "";
@@ -86,7 +128,8 @@ export async function PATCH(request: NextRequest) {
       const [current] = await tx.select().from(orders).where(and(eq(orders.id, body.id), eq(orders.businessId, business.id))).limit(1);
       if (!current) throw new ApiError("Order not found.", 404);
       if (current.status !== body.expectedStatus) throw new ApiError("This order changed on another device. Refreshing the latest status.", 409);
-      if (body.nextStatus === "completed" && current.fulfilment !== "pickup") throw new ApiError("Delivery completion must be confirmed by the delivery service.", 409);
+      if (body.nextStatus === "out_for_delivery" && current.fulfilment !== "delivery") throw new ApiError("Only delivery orders can be sent out for delivery.", 409);
+      if (body.nextStatus === "completed" && current.fulfilment === "delivery" && current.status === "ready") throw new ApiError("Send this delivery order out before marking it delivered.", 409);
       const [result] = await tx.update(orders).set({ status: body.nextStatus, prepMinutes: body.nextStatus === "accepted" ? prepMinutes : current.prepMinutes, rejectionReason: body.nextStatus === "rejected" ? reason : current.rejectionReason, updatedAt: new Date() }).where(and(eq(orders.id, body.id), eq(orders.businessId, business.id), eq(orders.status, body.expectedStatus))).returning();
       if (!result) throw new ApiError("This order changed on another device. Refreshing the latest status.", 409);
       await tx.insert(orderEvents).values({ orderId: result.id, actorId: user.id, fromStatus: body.expectedStatus, toStatus: body.nextStatus, reason });

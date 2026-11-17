@@ -1,5 +1,5 @@
 export type BusinessType = "restaurant" | "vendor";
-export type OrderStatus = "new" | "accepted" | "preparing" | "ready" | "completed" | "rejected" | "cancelled";
+export type OrderStatus = "new" | "accepted" | "preparing" | "ready" | "out_for_delivery" | "completed" | "rejected" | "cancelled";
 export type Business = {
   id: string; type: BusinessType; name: string; ownerName: string; phone: string; address: string;
   category: string; registrationDetails: string; approvalStatus: "draft" | "pending" | "approved" | "rejected";
