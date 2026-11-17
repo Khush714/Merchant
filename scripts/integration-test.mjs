@@ -40,6 +40,7 @@ async function rawRequest(path, { method = "POST", cookie, body, contentType } =
 async function account(email, type) {
   const registered = await request("/api/auth", { method: "POST", body: { action: "register", email, password: `T3st-${run}` } });
   assert.equal(registered.status, 201); assert.ok(registered.cookie);
+  assert.equal(registered.data.verificationRequired, false); assert.equal(registered.data.user.emailVerified, false);
   const draft = await request("/api/merchant/business", { method: "POST", cookie: registered.cookie, body: { type } });
   assert.equal(draft.status, 201); assert.equal(draft.data.business.type, type); assert.equal(draft.data.business.approvalStatus, "draft");
   await request("/api/merchant/business", { method: "PATCH", cookie: registered.cookie, body: { action: "details", name: `Draft ${type}`, ownerName: "", phone: "", address: "", submit: false } });
@@ -80,6 +81,8 @@ try {
   const missing = await fetch(`${base}/this-route-does-not-exist`);
   assert.equal(missing.status, 404);
   assert.match(await missing.text(), /Page not found/);
+  const publicAuth = await request("/api/auth");
+  assert.equal(publicAuth.status, 200); assert.equal(publicAuth.data.user, null); assert.equal(publicAuth.data.verificationRequired, false);
   const unauth = await request("/api/merchant/orders"); assert.equal(unauth.status, 401);
   assert.equal((await request("/api/admin/approval", { method: "POST", body: { businessId: randomUUID(), status: "approved" } })).status, 403);
   assert.ok(Number(scalar(`select count(*) from audit_logs where event='admin.approval' and outcome='denied' and detail->>'reason'='invalid_token' and created_at > now() - interval '2 minutes'`)) >= 1);
@@ -194,7 +197,7 @@ try {
   // Signing in again from another browser must not disturb the existing session, but signing in with a
   // token already in that browser must rotate it away.
   const extraLogin = await request("/api/auth", { method: "POST", body: { action: "login", email: emails[0], password: `T3st-${run}` } });
-  assert.equal(extraLogin.status, 200); assert.ok(extraLogin.cookie); assert.notEqual(extraLogin.cookie, restaurant.cookie);
+  assert.equal(extraLogin.status, 200); assert.ok(extraLogin.cookie); assert.notEqual(extraLogin.cookie, restaurant.cookie); assert.equal(extraLogin.data.verificationRequired, false);
   assert.ok((await request("/api/auth", { cookie: restaurant.cookie })).data.user);
   const rotated = await request("/api/auth", { method: "POST", cookie: restaurant.cookie, body: { action: "login", email: emails[0], password: `T3st-${run}` } });
   assert.equal(rotated.status, 200); assert.ok(rotated.cookie);
@@ -248,7 +251,7 @@ try {
   assert.equal(scalar(`select count(*) from audit_logs where event='auth.verify_email' and outcome='success' and actor_user_id in (${owners})`), "2");
   assert.equal(scalar(`select count(*) from audit_logs where event='auth.reset_password' and outcome='success' and actor_user_id='${vendorId}' and detail->>'sessionsRevoked'='true'`), "1");
   assert.equal(scalar(`select count(*) from audit_logs where event='auth.forgot_password' and actor_email_hash='${hash(missingEmail)}' and detail->>'accountFound'='false'`), "1");
-  console.log("PASS: security headers, registration, approval, marketplace, concurrency, sessions, password change, hashed audit trail, email verification, single-use password reset and authoritative settlement mirror");
+  console.log("PASS: security headers, opt-in verification gate, registration, approval, marketplace, concurrency, sessions, password change, hashed audit trail, email verification, single-use password reset and authoritative settlement mirror");
 } finally {
   try { sql(`begin; delete from audit_logs where actor_user_id in (${owners}) or business_id in (${shops}) or actor_email_hash in ('${hash(emails[0])}','${hash(emails[1])}','${hash(missingEmail)}') or (event in ('auth.verify_email','auth.reset_password') and outcome='failure'); delete from account_tokens where user_id in (${owners}); delete from order_events where order_id in (${testOrders}); delete from order_items where order_id in (${testOrders}); delete from orders where business_id in (${shops}); delete from menu_items where business_id in (${shops}); delete from settlements where business_id in (${shops}); delete from sessions where user_id in (${owners}); delete from businesses where owner_id in (${owners}); delete from users where id in (${owners}); commit;`); }
   catch (error) { console.error("Could not clean up disposable test records:", error.message); process.exitCode = 1; }

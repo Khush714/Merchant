@@ -7,11 +7,11 @@ import { AccountModal, api, DecisionModal, FulfilmentModal, MenuModal, Modal, Pa
 import { BusinessSettings } from "@/components/business-settings";
 import { OrderCard, statusLabel, timeAgo, type OrderAction } from "@/components/order-card";
 import { demoBusiness, demoMenu, demoOverview, makeDemoOrders } from "@/lib/demo";
-import { money, type AuthUser, type Business, type MenuItem, type Order, type OrderStatus, type Overview } from "@/lib/types";
+import { money, type AuthResponse, type AuthUser, type Business, type MenuItem, type Order, type OrderStatus, type Overview } from "@/lib/types";
 
 type Page = "home" | "orders" | "menu" | "earnings" | "more";
 type User = AuthUser;
-type AuthData = { user: User | null; business: Business | null };
+type AuthData = AuthResponse;
 type Filter = "active" | "all" | "new" | "accepted" | "preparing" | "ready" | "out_for_delivery" | "completed" | "cancelled";
 const emptyOverview: Overview = { counts: { new: 0, accepted: 0, preparing: 0, ready: 0, out_for_delivery: 0, completed: 0, cancelled: 0, rejected: 0 }, todaySales: 0, todayOrders: 0, completedToday: 0, settlements: [], settlementSync: { linked: false, status: "idle", lastSyncedAt: null } };
 const navItems: { id: Page; label: string; icon: typeof Home }[] = [{ id: "home", label: "Home", icon: Home }, { id: "orders", label: "Orders", icon: ShoppingBag }, { id: "menu", label: "Menu", icon: BookOpen }, { id: "earnings", label: "Earnings", icon: CircleDollarSign }, { id: "more", label: "More", icon: LayoutGrid }];
@@ -31,7 +31,7 @@ function subscribeToNetwork(callback: () => void) {
 function getNetworkStatus() { return navigator.onLine; }
 
 export default function MerchantApp() {
-  const [demo, setDemo] = useState(true), [user, setUser] = useState<User | null>(null), [business, setBusiness] = useState<Business | null>(demoBusiness);
+  const [demo, setDemo] = useState(true), [user, setUser] = useState<User | null>(null), [verificationRequired, setVerificationRequired] = useState(false), [business, setBusiness] = useState<Business | null>(demoBusiness);
   const [orders, setOrders] = useState<Order[]>(() => makeDemoOrders()), [items, setItems] = useState<MenuItem[]>(demoMenu), [overview, setOverview] = useState<Overview>(emptyOverview);
   const [page, setPage] = useState<Page>("home"), [orderFilter, setOrderFilter] = useState<Filter>("active"), [homeFilter, setHomeFilter] = useState<"all" | "new" | "preparing" | "ready" | "out_for_delivery">("all");
   const [search, setSearch] = useState(""), [debouncedSearch, setDebouncedSearch] = useState(""), [from, setFrom] = useState(""), [to, setTo] = useState(""), [orderPage, setOrderPage] = useState(1), [hasMore, setHasMore] = useState(false);
@@ -43,7 +43,7 @@ export default function MerchantApp() {
 
   const activate = useCallback((data: AuthData) => {
     if (!data.user) return;
-    setDemo(false); setUser(data.user); setBusiness(data.business); setOrders([]); setItems([]); setOverview(emptyOverview); setPage("home"); setAccountOpen(false); lastNewCount.current = null; lastNewId.current = null;
+    setDemo(false); setUser(data.user); setVerificationRequired(data.verificationRequired); setBusiness(data.business); setOrders([]); setItems([]); setOverview(emptyOverview); setPage("home"); setAccountOpen(false); lastNewCount.current = null; lastNewId.current = null;
     if (!data.business || data.business.approvalStatus === "draft") setSetupOpen(true);
   }, []);
   useEffect(() => { let active = true; api<AuthData>("/api/auth").then((data) => { if (active && data.user) activate(data); }).catch(() => { if (active) setSyncError("Couldn’t reach the server. Try again when you’re online."); }); return () => { active = false; }; }, [activate]);
@@ -213,7 +213,7 @@ export default function MerchantApp() {
     if (demo) { setBusiness({ ...business, ...payload } as Business); return; }
     const data = await api<{ business: Business }>("/api/merchant/business", { method: "PATCH", body: JSON.stringify(payload) }); setBusiness(data.business);
   }
-  async function endSession(action: "logout" | "logout-all", message: string) { try { await api("/api/auth", { method: "POST", body: JSON.stringify({ action }) }); setDemo(true); setUser(null); setBusiness(demoBusiness); setOrders(makeDemoOrders()); setItems(demoMenu); setPage("home"); setToast(message); } catch (err) { setToast(err instanceof Error ? err.message : "Could not sign out."); } }
+  async function endSession(action: "logout" | "logout-all", message: string) { try { await api("/api/auth", { method: "POST", body: JSON.stringify({ action }) }); setDemo(true); setUser(null); setVerificationRequired(false); setBusiness(demoBusiness); setOrders(makeDemoOrders()); setItems(demoMenu); setPage("home"); setToast(message); } catch (err) { setToast(err instanceof Error ? err.message : "Could not sign out."); } }
   function signOut() { return endSession("logout", "Signed out."); }
   function signOutEverywhere() { return endSession("logout-all", "Signed out of all devices."); }
   async function resendVerification() {
@@ -250,7 +250,7 @@ export default function MerchantApp() {
       <div className="mobile-topbar"><div className="mobile-brand"><span className="brand-mark"><UtensilsCrossed size={18} /></span><strong>savour<span>.</span></strong><small>PARTNER</small></div><div className="mobile-top-actions"><button className="icon-button" aria-label="Notifications" onClick={() => setNotificationsOpen(true)}><Bell size={20} /></button><button className="store-avatar small-avatar avatar-button" aria-label="Account" onClick={() => demo ? setAccountOpen(true) : setProfileOpen(true)}>{initials(name)}</button></div></div>
       {!online && <div className="connection-banner"><WifiOff size={16} /> You’re offline. New orders and changes won’t sync until you reconnect.</div>}
       {online && syncError && <div className="connection-banner"><WifiOff size={16} /> {syncError} <button onClick={() => setRefreshKey((n) => n + 1)}>Retry</button></div>}
-      {!demo && user && !user.emailVerified && <div className="verification-banner"><Mail size={16} /><div><strong>Verify your email</strong><span>Confirm your address to keep your merchant account secure.</span></div><button disabled={resendingVerification} onClick={() => void resendVerification()}>{resendingVerification ? "Sending…" : "Resend verification email"}</button></div>}
+      {!demo && user && !user.emailVerified && <div className="verification-banner"><Mail size={16} /><div><strong>{verificationRequired ? "Verify your email to continue" : "Email verification is optional for now"}</strong><span>{verificationRequired ? `We sent a link to ${user.email}. Check your inbox and spam folder.` : "Your workspace is ready to use; you can confirm your address whenever delivery is available."}</span></div><button disabled={resendingVerification} onClick={() => void resendVerification()}>{resendingVerification ? "Sending…" : "Resend verification email"}</button></div>}
       {demo && <div className="demo-banner"><div><Sparkles size={15} /><strong>Explore your sample workspace</strong><span>Sample data · changes are temporary</span></div><div><button className="demo-mode-button" onClick={switchDemoMode}>Try {vendor ? "restaurant" : "street vendor"} mode</button><button className="demo-signup" onClick={() => setAccountOpen(true)}>Get started <ArrowRight size={14} /></button></div></div>}
       <div className="content-wrap">
         {page === "home" && <>

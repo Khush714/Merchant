@@ -5,7 +5,7 @@ import { businesses, users } from "@/db/schema";
 import { consumeAccountToken, createAccountToken, isAccountToken } from "@/lib/account-tokens";
 import { isEmailConfigured, sendPasswordResetEmail, sendVerificationEmail } from "@/lib/email";
 import { getMarketplaceLink } from "@/lib/marketplace-bridge";
-import { ApiError, BODY_LIMITS, changePassword, createSession, currentUser, deleteAllSessions, deleteSession, fail, hashPassword, rateLimit, readJson, recordAudit, requireUser, sameOrigin, textValue, verifyPassword } from "@/lib/server";
+import { ApiError, BODY_LIMITS, changePassword, createSession, currentUser, deleteAllSessions, deleteSession, fail, hashPassword, rateLimit, readJson, recordAudit, requireUser, sameOrigin, textValue, verificationRequired, verifyPassword } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
 
@@ -22,9 +22,9 @@ async function withListingStatus<T extends { id: string; approvalStatus: string 
 export async function GET(request: NextRequest) {
   try {
     const user = await currentUser();
-    if (!user) return NextResponse.json({ user: null, business: null });
+    if (!user) return NextResponse.json({ user: null, business: null, verificationRequired: verificationRequired() });
     const [business] = await db.select().from(businesses).where(eq(businesses.ownerId, user.id)).limit(1);
-    return NextResponse.json({ user, business: await withListingStatus(business) });
+    return NextResponse.json({ user, business: await withListingStatus(business), verificationRequired: verificationRequired() });
   } catch (error) { return fail(error, request); }
 }
 export async function POST(request: NextRequest) {
@@ -62,7 +62,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true, emailVerified: true });
     }
     if (body.action === "resend-verification") {
-      const user = await requireUser();
+      const user = await requireUser({ allowUnverified: true });
       if (user.emailVerified) return NextResponse.json({ ok: true, sent: false, configured: isEmailConfigured() });
       const token = await createAccountToken(user.id, "verify_email");
       const delivery = await sendVerificationEmail(request, user.email, token);
@@ -97,7 +97,7 @@ export async function POST(request: NextRequest) {
       return response;
     }
     if (body.action === "change-password") {
-      const user = await requireUser();
+      const user = await requireUser({ allowUnverified: true });
       const currentPassword = typeof body.currentPassword === "string" ? body.currentPassword : "";
       const newPassword = typeof body.newPassword === "string" ? body.newPassword : "";
       if (newPassword.length < 8 || newPassword.length > 128) throw new ApiError("Choose a new password of 8–128 characters.");
@@ -129,7 +129,7 @@ export async function POST(request: NextRequest) {
       }
       const token = await createAccountToken(user.id, "verify_email");
       const delivery = await sendVerificationEmail(request, user.email, token);
-      const response = NextResponse.json({ user: authUser(user), business: null }, { status: 201 });
+      const response = NextResponse.json({ user: authUser(user), business: null, verificationRequired: verificationRequired() }, { status: 201 });
       await createSession(user.id, response);
       await recordAudit({ request, event: "auth.register", outcome: "success", userId: user.id, email: user.email, detail: { verificationSent: delivery.sent } });
       return response;
@@ -141,7 +141,7 @@ export async function POST(request: NextRequest) {
         throw new ApiError("Incorrect email or password.", 401);
       }
       const [business] = await db.select().from(businesses).where(eq(businesses.ownerId, record.id)).limit(1);
-      const response = NextResponse.json({ user: authUser(record), business: await withListingStatus(business) });
+      const response = NextResponse.json({ user: authUser(record), business: await withListingStatus(business), verificationRequired: verificationRequired() });
       await createSession(record.id, response);
       await recordAudit({ request, event: "auth.login", outcome: "success", userId: record.id, email: record.email });
       return response;

@@ -96,9 +96,16 @@ export async function currentUser() {
   return { id: result.id, email: result.email, emailVerified: result.emailVerifiedAt !== null };
 }
 export class ApiError extends Error { constructor(message: string, public status = 400) { super(message); } }
-export async function requireUser() {
+/** Opt-in only: without Resend configured, gating would lock out accounts that cannot receive the link. */
+export function verificationRequired() {
+  return (process.env.REQUIRE_EMAIL_VERIFICATION ?? "").trim().toLowerCase() === "true";
+}
+export async function requireUser({ allowUnverified = false }: { allowUnverified?: boolean } = {}) {
   const user = await currentUser();
   if (!user) throw new ApiError("Please sign in to continue.", 401);
+  if (!allowUnverified && verificationRequired() && !user.emailVerified) {
+    throw new ApiError("Verify your email before continuing.", 403);
+  }
   return user;
 }
 export async function requireBusiness() {

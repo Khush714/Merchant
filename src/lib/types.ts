@@ -7,6 +7,7 @@ export type Business = {
   isOpen: boolean; pickupEnabled: boolean; deliveryEnabled: boolean; hoursEnabled: boolean;
   opensAt: string; closesAt: string; updatedAt?: string;
 };
+export type AuthResponse = { user: AuthUser | null; business: Business | null; verificationRequired: boolean };
 export type MenuItem = {
   id: string; businessId: string; name: string; description: string; price: number; category: string;
   imageUrl: string; dietary: string; available: boolean; archived: boolean;

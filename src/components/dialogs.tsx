@@ -1,7 +1,7 @@
 "use client";
 import { useState, type FormEvent, type ReactNode } from "react";
 import { ArrowLeft, ArrowRight, CheckCircle2, ChefHat, Store, X } from "lucide-react";
-import type { AuthUser, Business, BusinessType, MenuItem, Order } from "@/lib/types";
+import type { AuthResponse, AuthUser, Business, BusinessType, MenuItem, Order } from "@/lib/types";
 import { money } from "@/lib/types";
 import type { OrderAction } from "@/components/order-card";
 
@@ -16,7 +16,7 @@ export function Modal({ title, subtitle, onClose, children, wide = false }: { ti
     <div className="modal-heading"><div><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div><button className="icon-button" aria-label="Close" onClick={onClose}><X size={20} /></button></div>{children}
   </section></div>;
 }
-export function AccountModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (data: { user: AuthUser; business: Business | null }) => void }) {
+export function AccountModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (data: AuthResponse & { user: AuthUser }) => void }) {
   const [mode, setMode] = useState<"register" | "login" | "forgot">("register"), [email, setEmail] = useState(""), [password, setPassword] = useState(""), [error, setError] = useState(""), [message, setMessage] = useState(""), [busy, setBusy] = useState(false);
   async function submit(event: FormEvent) {
     event.preventDefault(); setBusy(true); setError(""); setMessage("");
@@ -25,7 +25,7 @@ export function AccountModal({ onClose, onSuccess }: { onClose: () => void; onSu
         const data = await api<{ ok: boolean; sent: boolean; configured: boolean }>("/api/auth", { method: "POST", body: JSON.stringify({ action: "forgot-password", email }) });
         setMessage(data.configured ? data.sent ? "If that email is registered, we’ve sent a reset link." : "We couldn’t send the email. Please try again later." : "Email delivery isn’t configured in this environment.");
       } else {
-        onSuccess(await api<{ user: AuthUser; business: Business | null }>("/api/auth", { method: "POST", body: JSON.stringify({ action: mode, email, password }) }));
+        onSuccess(await api<AuthResponse & { user: AuthUser }>("/api/auth", { method: "POST", body: JSON.stringify({ action: mode, email, password }) }));
       }
     } catch (err) { setError(err instanceof Error ? err.message : "Please try again."); } finally { setBusy(false); }
   }
