@@ -5,9 +5,19 @@ import type { AuthResponse, AuthUser, Business, BusinessType, MenuItem, Order } 
 import { money } from "@/lib/types";
 import type { OrderAction } from "@/components/order-card";
 
+/** Sign-in failures are reported inline by AccountModal, so only other 401s mean an expired session. */
+export const AUTH_EXPIRED_EVENT = "savour-auth-expired";
+export class ApiUnauthorizedError extends Error {
+  constructor() { super("Your session has expired. Please sign in again."); }
+}
+
 export async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(path, { ...options, headers: { "Content-Type": "application/json", ...options?.headers }, cache: "no-store" });
   const data = await response.json().catch(() => ({}));
+  if (response.status === 401 && !path.startsWith("/api/auth")) {
+    if (typeof window !== "undefined") window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+    throw new ApiUnauthorizedError();
+  }
   if (!response.ok) throw new Error(data.error || "Something went wrong. Please try again.");
   return data as T;
 }

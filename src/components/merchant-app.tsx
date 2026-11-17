@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import Image from "next/image";
 import Link from "next/link";
 import { ArrowDownRight, ArrowRight, ArrowUpRight, Bell, BellRing, Bike, BookOpen, Check, CheckCircle2, ChefHat, ChevronDown, ChevronLeft, ChevronRight, CircleDollarSign, Clock3, CreditCard, ExternalLink, Headphones, HelpCircle, Home, Info, KeyRound, LayoutGrid, LogOut, Mail, Menu as MenuIcon, MoreHorizontal, PackageCheck, Plus, Search, Settings2, ShoppingBag, Sparkles, Store, Trash2, UtensilsCrossed, WifiOff, X } from "lucide-react";
-import { AccountModal, api, DecisionModal, FulfilmentModal, MenuModal, Modal, PasswordModal, SetupModal, type MenuInput } from "@/components/dialogs";
+import { AccountModal, ApiUnauthorizedError, AUTH_EXPIRED_EVENT, api, DecisionModal, FulfilmentModal, MenuModal, Modal, PasswordModal, SetupModal, type MenuInput } from "@/components/dialogs";
 import { BusinessSettings } from "@/components/business-settings";
 import { OrderCard, statusLabel, timeAgo, type OrderAction } from "@/components/order-card";
 import { demoBusiness, demoMenu, demoOverview, makeDemoOrders } from "@/lib/demo";
@@ -47,12 +47,22 @@ export default function MerchantApp() {
     if (!data.business || data.business.approvalStatus === "draft") setSetupOpen(true);
   }, []);
   useEffect(() => { let active = true; api<AuthData>("/api/auth").then((data) => { if (active && data.user) activate(data); }).catch(() => { if (active) setSyncError("Couldn’t reach the server. Try again when you’re online."); }); return () => { active = false; }; }, [activate]);
+  useEffect(() => {
+    const reset = () => {
+      setDemo(true); setUser(null); setVerificationRequired(false); setBusiness(demoBusiness);
+      setOrders(makeDemoOrders()); setItems(demoMenu); setOverview(emptyOverview);
+      setPage("home"); setAccountOpen(false); setProfileOpen(false); setSetupOpen(false);
+      setSyncError(""); setMenuError(""); setToast("Your session expired. Please sign in again.");
+    };
+    window.addEventListener(AUTH_EXPIRED_EVENT, reset);
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, reset);
+  }, []);
   useEffect(() => { const timeout = window.setTimeout(() => { setDebouncedSearch(search); setOrderPage(1); }, 350); return () => window.clearTimeout(timeout); }, [search]);
   useEffect(() => { if (!toast) return; const timeout = window.setTimeout(() => setToast(""), 4200); return () => window.clearTimeout(timeout); }, [toast]);
   useEffect(() => {
     if (demo || !business?.id) return;
     let active = true;
-    api<{ items: MenuItem[] }>("/api/merchant/menu").then((data) => { if (active) { setItems(data.items); setMenuError(""); } }).catch((error) => { if (active) setMenuError(error.message); });
+    api<{ items: MenuItem[] }>("/api/merchant/menu").then((data) => { if (active) { setItems(data.items); setMenuError(""); } }).catch((error) => { if (active && !(error instanceof ApiUnauthorizedError)) setMenuError(error.message); });
     return () => { active = false; };
   }, [demo, business?.id, refreshKey]);
   useEffect(() => {
@@ -79,7 +89,7 @@ export default function MerchantApp() {
           if ("Notification" in window && Notification.permission === "granted") { try { new Notification("New order on Savour", { body: "Open your workspace to review it." }); } catch { /* Notifications may be unavailable in this browser. */ } }
         }
         lastNewCount.current = newCount; lastNewId.current = overviewData.overview.latestNewOrderId || null; setBusiness((current) => current && current.id === overviewData.business.id && (!current.updatedAt || (overviewData.business.updatedAt && new Date(overviewData.business.updatedAt).getTime() >= new Date(current.updatedAt).getTime())) ? overviewData.business : current); setOverview(overviewData.overview); setOrders(orderData.orders); setHasMore(orderData.hasMore); setSyncError(""); failures = 0;
-      } catch { if (!stopped) { failures++; setSyncError("Couldn’t sync the latest data. We’ll retry automatically."); } }
+      } catch (error) { if (error instanceof ApiUnauthorizedError) return; if (!stopped) { failures++; setSyncError("Couldn’t sync the latest data. We’ll retry automatically."); } }
       if (!stopped) timer = setTimeout(poll, Math.min(30000 * 2 ** failures, 120000));
     };
     void poll();
