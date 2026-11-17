@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { menuItems } from "@/db/schema";
 import { getMarketplaceLink, marketplaceFetch } from "@/lib/marketplace-bridge";
-import { ApiError, fail, requireBusiness, sameOrigin, textValue } from "@/lib/server";
+import { ApiError, BODY_LIMITS, fail, readJson, requireBusiness, sameOrigin, textValue } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -28,7 +28,7 @@ export async function GET() {
 }
 export async function POST(request: NextRequest) {
   try {
-    sameOrigin(request); const { business } = await requireBusiness(); const body = await request.json();
+    sameOrigin(request); const { business } = await requireBusiness(); const body = await readJson(request, BODY_LIMITS.menu);
     if (await getMarketplaceLink(business.id)) {
       const remote = await marketplaceFetch<any>(business.id, "/api/integration/merchant/menu/items", { method: "POST", body: JSON.stringify(body) });
       return NextResponse.json({ item: remote.item }, { status: 201 });
@@ -39,7 +39,7 @@ export async function POST(request: NextRequest) {
 }
 export async function PATCH(request: NextRequest) {
   try {
-    sameOrigin(request); const { business } = await requireBusiness(); const body = await request.json();
+    sameOrigin(request); const { business } = await requireBusiness(); const body = await readJson(request, BODY_LIMITS.menu);
     if (await getMarketplaceLink(business.id)) {
       const remote = await marketplaceFetch<any>(business.id, "/api/integration/merchant/menu/items", { method: "PATCH", body: JSON.stringify(body) });
       return NextResponse.json({ item: remote.item });
@@ -57,7 +57,7 @@ export async function PATCH(request: NextRequest) {
 }
 export async function DELETE(request: NextRequest) {
   try {
-    sameOrigin(request); const { business } = await requireBusiness(); const body = await request.json();
+    sameOrigin(request); const { business } = await requireBusiness(); const body = await readJson(request, BODY_LIMITS.menu);
     if (await getMarketplaceLink(business.id)) {
       await marketplaceFetch<any>(business.id, "/api/integration/merchant/menu/items", { method: "DELETE", body: JSON.stringify(body) });
       return NextResponse.json({ ok: true });

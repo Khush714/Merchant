@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { businesses } from "@/db/schema";
 import { getMarketplaceLink, marketplaceFetch } from "@/lib/marketplace-bridge";
-import { ApiError, fail, requireBusiness, requireUser, sameOrigin, textValue } from "@/lib/server";
+import { ApiError, BODY_LIMITS, fail, readJson, requireBusiness, requireUser, sameOrigin, textValue } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
 export async function GET() {
@@ -14,7 +14,7 @@ export async function POST(request: NextRequest) {
   try {
     sameOrigin(request);
     const user = await requireUser();
-    const body = await request.json();
+    const body = await readJson(request, BODY_LIMITS.business);
     if (body.type !== "restaurant" && body.type !== "vendor") throw new ApiError("Choose a business type.");
     const [existing] = await db.select().from(businesses).where(eq(businesses.ownerId, user.id)).limit(1);
     if (existing) {
@@ -31,7 +31,7 @@ export async function PATCH(request: NextRequest) {
   try {
     sameOrigin(request);
     const { business } = await requireBusiness();
-    const body = await request.json();
+    const body = await readJson(request, BODY_LIMITS.business);
     const linked = Boolean(await getMarketplaceLink(business.id));
     if (body.action === "availability") {
       if (typeof body.isOpen !== "boolean") throw new ApiError("Invalid availability.");

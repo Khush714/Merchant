@@ -17,6 +17,12 @@ async function request(path, { method = "GET", cookie, body } = {}) {
   const data = await response.json();
   return { status: response.status, data, cookie: response.headers.get("set-cookie")?.split(";")[0] };
 }
+async function rawRequest(path, { method = "POST", cookie, body, contentType } = {}) {
+  const response = await fetch(`${base}${path}`, { method, headers: { ...(cookie ? { cookie } : {}), ...(contentType ? { "content-type": contentType } : {}) }, ...(body === undefined ? {} : { body }) });
+  const text = await response.text();
+  let data; try { data = JSON.parse(text); } catch { data = text; }
+  return { status: response.status, data };
+}
 async function account(email, type) {
   const registered = await request("/api/auth", { method: "POST", body: { action: "register", email, password: `T3st-${run}` } });
   assert.equal(registered.status, 201); assert.ok(registered.cookie);
@@ -36,6 +42,10 @@ async function transition(cookie, id, expectedStatus, nextStatus, extra = {}) { 
 try {
   const unauth = await request("/api/merchant/orders"); assert.equal(unauth.status, 401);
   assert.equal((await request("/api/admin/approval", { method: "POST", body: { businessId: randomUUID(), status: "approved" } })).status, 403);
+  assert.equal((await rawRequest("/api/marketplace", { body: "{not json", contentType: "application/json" })).status, 400);
+  assert.equal((await rawRequest("/api/marketplace", { body: "businessId=1", contentType: "text/plain" })).status, 415);
+  assert.equal((await rawRequest("/api/marketplace", { body: JSON.stringify({ padding: "x".repeat(140 * 1024) }), contentType: "application/json" })).status, 413);
+  assert.equal((await rawRequest("/api/marketplace", { body: "", contentType: "application/json" })).status, 400);
   const restaurant = await account(emails[0], "restaurant"), vendor = await account(emails[1], "vendor");
   let marketplace = await request("/api/marketplace"); assert.ok(!marketplace.data.businesses.some((b) => [restaurant.business.id, vendor.business.id].includes(b.id)));
   // Simulate the trusted review system in a disposable local database.
@@ -73,6 +83,14 @@ try {
   assert.equal((await transition(restaurant.cookie, delivery.data.order.id, "accepted", "preparing")).status, 200);
   assert.equal((await transition(restaurant.cookie, delivery.data.order.id, "preparing", "ready")).status, 200);
   assert.equal((await transition(restaurant.cookie, delivery.data.order.id, "ready", "completed")).status, 409);
+  // A dispatch and a fulfilment change racing on the same order must not both succeed.
+  const [dispatched, switched] = await Promise.all([
+    transition(restaurant.cookie, delivery.data.order.id, "ready", "out_for_delivery"),
+    request("/api/merchant/orders", { method: "PATCH", cookie: restaurant.cookie, body: { id: delivery.data.order.id, fulfilment: "pickup" } }),
+  ]);
+  assert.deepEqual([dispatched.status, switched.status].sort(), [200, 409]);
+  const racedTracking = await request(`/api/marketplace?orderId=${delivery.data.order.id}&token=${deliveryPayload.idempotencyKey}`);
+  assert.ok(!(racedTracking.data.order.status === "out_for_delivery" && racedTracking.data.order.fulfilment === "pickup"));
   assert.equal((await transition(vendor.cookie, vOrder.data.order.id, "new", "rejected", { reason: "Sold out" })).status, 200);
   const second = await request("/api/marketplace", { method: "POST", body: { ...vPayload, idempotencyKey: randomUUID() } }); assert.equal(second.status, 201);
   assert.equal((await transition(vendor.cookie, second.data.order.id, "new", "accepted", { prepMinutes: 15 })).status, 200);
@@ -92,7 +110,19 @@ try {
   const edited = await request("/api/merchant/menu", { method: "PATCH", cookie: restaurant.cookie, body: { ...itemBody, id: rItem.data.item.id, name: "Updated meal", price: 30000 } }); assert.equal(edited.data.item.price, 30000);
   const updatedPublicMenu = await request(`/api/marketplace?businessId=${restaurant.business.id}`); assert.equal(updatedPublicMenu.data.items.find((item) => item.id === rItem.data.item.id).price, 30000);
   const earnings = await request("/api/merchant/overview", { cookie: restaurant.cookie }); assert.equal(earnings.data.overview.todaySales, 50000); assert.equal(earnings.data.overview.completedToday, 1); assert.equal(earnings.data.overview.settlements.length, 0);
-  console.log("PASS: restaurant and vendor registration, draft resumption, approval, shared marketplace, idempotency, isolation, concurrent pickup and delivery lifecycle, scheduled availability, menu and authoritative earnings");
+  // Signing in again from another browser must not disturb the existing session, but signing in with a
+  // token already in that browser must rotate it away.
+  const extraLogin = await request("/api/auth", { method: "POST", body: { email: emails[0], password: `T3st-${run}` } });
+  assert.equal(extraLogin.status, 200); assert.ok(extraLogin.cookie); assert.notEqual(extraLogin.cookie, restaurant.cookie);
+  assert.ok((await request("/api/auth", { cookie: restaurant.cookie })).data.user);
+  const rotated = await request("/api/auth", { method: "POST", cookie: restaurant.cookie, body: { email: emails[0], password: `T3st-${run}` } });
+  assert.equal(rotated.status, 200); assert.ok(rotated.cookie);
+  assert.equal((await request("/api/auth", { cookie: restaurant.cookie })).data.user, null);
+  assert.ok((await request("/api/auth", { cookie: rotated.cookie })).data.user);
+  assert.equal((await request("/api/auth", { method: "POST", cookie: rotated.cookie, body: { action: "logout-all" } })).status, 200);
+  assert.equal((await request("/api/auth", { cookie: rotated.cookie })).data.user, null);
+  assert.equal((await request("/api/auth", { cookie: extraLogin.cookie })).data.user, null);
+  console.log("PASS: restaurant and vendor registration, draft resumption, approval, shared marketplace, idempotency, isolation, concurrent pickup and delivery lifecycle, scheduled availability, menu, authoritative earnings, and session rotation and sign-out-all");
 } finally {
   try { sql(`begin; delete from order_events where order_id in (${testOrders}); delete from order_items where order_id in (${testOrders}); delete from orders where business_id in (${shops}); delete from menu_items where business_id in (${shops}); delete from settlements where business_id in (${shops}); delete from sessions where user_id in (${owners}); delete from businesses where owner_id in (${owners}); delete from users where id in (${owners}); commit;`); }
   catch (error) { console.error("Could not clean up disposable test records:", error.message); process.exitCode = 1; }

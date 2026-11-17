@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { businesses, users } from "@/db/schema";
 import { getMarketplaceLink } from "@/lib/marketplace-bridge";
-import { ApiError, createSession, currentUser, deleteSession, fail, hashPassword, rateLimit, sameOrigin, textValue, verifyPassword } from "@/lib/server";
+import { ApiError, BODY_LIMITS, createSession, currentUser, deleteAllSessions, deleteSession, fail, hashPassword, rateLimit, readJson, sameOrigin, textValue, verifyPassword } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
 
@@ -24,11 +24,16 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     sameOrigin(request);
-    rateLimit(request, "auth", 15, 60_000);
-    const body = await request.json();
+    await rateLimit(request, "auth", 15, 60_000);
+    const body = await readJson(request, BODY_LIMITS.auth);
     if (body.action === "logout") {
       const response = NextResponse.json({ ok: true });
       await deleteSession(response);
+      return response;
+    }
+    if (body.action === "logout-all") {
+      const response = NextResponse.json({ ok: true });
+      await deleteAllSessions(response);
       return response;
     }
     const email = textValue(body.email, 254).toLowerCase();

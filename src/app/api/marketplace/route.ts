@@ -2,13 +2,13 @@ import { and, asc, eq, inArray } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { businesses, businessMarketplaceLinks, menuItems, orderEvents, orderItems, orders } from "@/db/schema";
-import { ApiError, fail, rateLimit, sameOrigin, sha256, textValue, withinOperatingHours } from "@/lib/server";
+import { ApiError, BODY_LIMITS, fail, rateLimit, readJson, sameOrigin, sha256, textValue, withinOperatingHours } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export async function GET(request: NextRequest) {
   try {
-    rateLimit(request, "marketplace-read", 120);
+    await rateLimit(request, "marketplace-read", 120);
     const p = request.nextUrl.searchParams, orderId = p.get("orderId"), token = p.get("token"), businessId = p.get("businessId");
     if (orderId && token) {
       if (!uuid.test(orderId) || token.length < 32 || token.length > 128) throw new ApiError("Order not found.", 404);
@@ -30,8 +30,8 @@ export async function GET(request: NextRequest) {
 }
 export async function POST(request: NextRequest) {
   try {
-    sameOrigin(request); rateLimit(request, "marketplace-order", 30);
-    const body = await request.json();
+    sameOrigin(request); await rateLimit(request, "marketplace-order", 30);
+    const body = await readJson(request, BODY_LIMITS.marketplace);
     const businessId = textValue(body.businessId, 50), token = textValue(body.idempotencyKey, 128), customerName = textValue(body.customerName, 100) || "Guest", customerNote = textValue(body.customerNote, 500), fulfilment = textValue(body.fulfilment, 20), deliveryAddress = textValue(body.deliveryAddress, 300);
     if (!uuid.test(businessId) || token.length < 32 || !/^[a-zA-Z0-9-]+$/.test(token) || !["pickup", "delivery"].includes(fulfilment) || !Array.isArray(body.items) || body.items.length < 1 || body.items.length > 30) throw new ApiError("Please check your order and try again.");
     const [marketplaceLink] = await db.select({ id: businessMarketplaceLinks.id }).from(businessMarketplaceLinks).where(eq(businessMarketplaceLinks.businessId, businessId)).limit(1);

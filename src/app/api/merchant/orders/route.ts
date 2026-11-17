@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { orderEvents, orderItems, orders } from "@/db/schema";
 import { getMarketplaceLink, marketplaceFetch } from "@/lib/marketplace-bridge";
-import { ApiError, fail, requireBusiness, sameOrigin, textValue } from "@/lib/server";
+import { ApiError, BODY_LIMITS, fail, readJson, requireBusiness, sameOrigin, textValue } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
 const statuses = ["new", "accepted", "preparing", "ready", "out_for_delivery", "completed", "rejected", "cancelled"];
@@ -65,7 +65,7 @@ export async function GET(request: NextRequest) {
 }
 export async function PATCH(request: NextRequest) {
   try {
-    sameOrigin(request); const { user, business } = await requireBusiness(); const body = await request.json();
+    sameOrigin(request); const { user, business } = await requireBusiness(); const body = await readJson(request, BODY_LIMITS.orders);
     if (body.fulfilment !== undefined) {
       const fulfilment = body.fulfilment;
       if (fulfilment !== "pickup" && fulfilment !== "delivery") throw new ApiError("Choose pickup or delivery.");
@@ -85,7 +85,8 @@ export async function PATCH(request: NextRequest) {
       }
       if (typeof body.id !== "string" || !uuid.test(body.id)) throw new ApiError("Order not found.", 404);
       const updated = await db.transaction(async (tx) => {
-        const [current] = await tx.select().from(orders).where(and(eq(orders.id, body.id), eq(orders.businessId, business.id))).limit(1);
+        // Lock the order row so a simultaneous status transition cannot make these checks stale.
+        const [current] = await tx.select().from(orders).where(and(eq(orders.id, body.id), eq(orders.businessId, business.id))).limit(1).for("update");
         if (!current) throw new ApiError("Order not found.", 404);
         if (["completed", "rejected", "cancelled"].includes(current.status)) throw new ApiError("This order is closed and its fulfilment can no longer be changed.", 409);
         if (current.status === "out_for_delivery" && fulfilment === "pickup") throw new ApiError("This delivery is already with the rider and can no longer be changed to pickup.", 409);
@@ -98,8 +99,8 @@ export async function PATCH(request: NextRequest) {
           fulfilment,
           ...(fulfilment === "delivery" ? { deliveryAddress: nextAddress } : {}),
           updatedAt: new Date(),
-        }).where(and(eq(orders.id, body.id), eq(orders.businessId, business.id))).returning();
-        if (!result) throw new ApiError("Order not found.", 404);
+        }).where(and(eq(orders.id, body.id), eq(orders.businessId, business.id), eq(orders.status, current.status), eq(orders.fulfilment, current.fulfilment))).returning();
+        if (!result) throw new ApiError("This order changed on another device. Refreshing the latest status.", 409);
         await tx.insert(orderEvents).values({
           orderId: result.id, actorId: user.id, fromStatus: current.status, toStatus: current.status,
           reason: fulfilment === current.fulfilment ? "Delivery address updated by merchant" : `Fulfilment changed from ${current.fulfilment} to ${fulfilment} by merchant`,
@@ -125,12 +126,14 @@ export async function PATCH(request: NextRequest) {
     const prepMinutes = Number(body.prepMinutes);
     if (body.nextStatus === "accepted" && (!Number.isInteger(prepMinutes) || prepMinutes < 5 || prepMinutes > 180)) throw new ApiError("Choose a preparation time between 5 and 180 minutes.");
     const updated = await db.transaction(async (tx) => {
-      const [current] = await tx.select().from(orders).where(and(eq(orders.id, body.id), eq(orders.businessId, business.id))).limit(1);
+      // Lock the order row before validating the transition. Without this, a concurrent
+      // fulfilment change could make the fulfilment checks below operate on stale data.
+      const [current] = await tx.select().from(orders).where(and(eq(orders.id, body.id), eq(orders.businessId, business.id))).limit(1).for("update");
       if (!current) throw new ApiError("Order not found.", 404);
       if (current.status !== body.expectedStatus) throw new ApiError("This order changed on another device. Refreshing the latest status.", 409);
       if (body.nextStatus === "out_for_delivery" && current.fulfilment !== "delivery") throw new ApiError("Only delivery orders can be sent out for delivery.", 409);
       if (body.nextStatus === "completed" && current.fulfilment === "delivery" && current.status === "ready") throw new ApiError("Send this delivery order out before marking it delivered.", 409);
-      const [result] = await tx.update(orders).set({ status: body.nextStatus, prepMinutes: body.nextStatus === "accepted" ? prepMinutes : current.prepMinutes, rejectionReason: body.nextStatus === "rejected" ? reason : current.rejectionReason, updatedAt: new Date() }).where(and(eq(orders.id, body.id), eq(orders.businessId, business.id), eq(orders.status, body.expectedStatus))).returning();
+      const [result] = await tx.update(orders).set({ status: body.nextStatus, prepMinutes: body.nextStatus === "accepted" ? prepMinutes : current.prepMinutes, rejectionReason: body.nextStatus === "rejected" ? reason : current.rejectionReason, updatedAt: new Date() }).where(and(eq(orders.id, body.id), eq(orders.businessId, business.id), eq(orders.status, body.expectedStatus), eq(orders.fulfilment, current.fulfilment))).returning();
       if (!result) throw new ApiError("This order changed on another device. Refreshing the latest status.", 409);
       await tx.insert(orderEvents).values({ orderId: result.id, actorId: user.id, fromStatus: body.expectedStatus, toStatus: body.nextStatus, reason });
       return result;
