@@ -1,6 +1,6 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 
 const base = process.env.TEST_BASE_URL || "http://127.0.0.1:3000";
@@ -12,6 +12,7 @@ const owners = `select id from users where email in ('${emails[0]}','${emails[1]
 const shops = `select id from businesses where owner_id in (${owners})`;
 const testOrders = `select id from orders where business_id in (${shops})`;
 function sql(statement) { execFileSync("psql", [database, "-v", "ON_ERROR_STOP=1", "-q", "-c", statement], { stdio: "pipe" }); }
+function scalar(statement) { return execFileSync("psql", [database, "-v", "ON_ERROR_STOP=1", "-t", "-A", "-c", statement], { encoding: "utf8" }).trim(); }
 async function request(path, { method = "GET", cookie, body } = {}) {
   const response = await fetch(`${base}${path}`, { method, headers: { ...(cookie ? { cookie } : {}), ...(body ? { "content-type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
   const data = await response.json();
@@ -122,7 +123,20 @@ try {
   assert.equal((await request("/api/auth", { method: "POST", cookie: rotated.cookie, body: { action: "logout-all" } })).status, 200);
   assert.equal((await request("/api/auth", { cookie: rotated.cookie })).data.user, null);
   assert.equal((await request("/api/auth", { cookie: extraLogin.cookie })).data.user, null);
-  console.log("PASS: restaurant and vendor registration, draft resumption, approval, shared marketplace, idempotency, isolation, concurrent pickup and delivery lifecycle, scheduled availability, menu, authoritative earnings, and session rotation and sign-out-all");
+  // An idle-expired session is rejected and removed; an old session with recent use slides its expiry
+  // forward but still dies at the absolute lifetime.
+  const tokenHash = (token) => createHash("sha256").update(token).digest("hex");
+  sql(`update sessions set expires_at = now() - interval '1 minute' where token_hash = '${tokenHash(vendor.cookie.split("=")[1])}'`);
+  assert.equal((await request("/api/auth", { cookie: vendor.cookie })).data.user, null);
+  const vendorLogin = await request("/api/auth", { method: "POST", body: { email: emails[1], password: `T3st-${run}` } });
+  assert.equal(vendorLogin.status, 200); assert.ok(vendorLogin.cookie);
+  const vendorToken = tokenHash(vendorLogin.cookie.split("=")[1]);
+  sql(`update sessions set expires_at = now() + interval '10 days' where token_hash = '${vendorToken}'`);
+  assert.ok((await request("/api/auth", { cookie: vendorLogin.cookie })).data.user);
+  assert.equal(scalar(`select expires_at > now() + interval '29 days' from sessions where token_hash = '${vendorToken}'`), "t");
+  sql(`update sessions set created_at = now() - interval '91 days' where token_hash = '${vendorToken}'`);
+  assert.equal((await request("/api/auth", { cookie: vendorLogin.cookie })).data.user, null);
+  console.log("PASS: restaurant and vendor registration, draft resumption, approval, shared marketplace, idempotency, isolation, concurrent pickup and delivery lifecycle, scheduled availability, menu, authoritative earnings, and session rotation, sign-out-all, sliding idle timeout and absolute lifetime");
 } finally {
   try { sql(`begin; delete from order_events where order_id in (${testOrders}); delete from order_items where order_id in (${testOrders}); delete from orders where business_id in (${shops}); delete from menu_items where business_id in (${shops}); delete from settlements where business_id in (${shops}); delete from sessions where user_id in (${owners}); delete from businesses where owner_id in (${owners}); delete from users where id in (${owners}); commit;`); }
   catch (error) { console.error("Could not clean up disposable test records:", error.message); process.exitCode = 1; }

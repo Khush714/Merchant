@@ -3,13 +3,15 @@ import { isIP } from "node:net";
 import { promisify } from "node:util";
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
-import { and, desc, eq, gt, lt, notInArray } from "drizzle-orm";
+import { and, desc, eq, lt, notInArray } from "drizzle-orm";
 import { db } from "@/db";
 import { businesses, sessions, users } from "@/db/schema";
 
 const scrypt = promisify(scryptCallback);
 const COOKIE = "savour_session";
-const SESSION_SECONDS = 60 * 60 * 24 * 30;
+const SESSION_IDLE_SECONDS = 60 * 60 * 24 * 30;
+const SESSION_ABSOLUTE_SECONDS = 60 * 60 * 24 * 90;
+const SESSION_RENEW_AFTER_SECONDS = 60 * 60 * 24;
 const MAX_SESSIONS = 10;
 
 export const BODY_LIMITS = {
@@ -50,9 +52,9 @@ export async function createSession(userId: string, response: NextResponse) {
   // Rotate any token already present in this browser so it cannot survive a fresh sign-in.
   const previous = (await cookies()).get(COOKIE)?.value;
   if (previous) await db.delete(sessions).where(eq(sessions.tokenHash, sha256(previous)));
-  await db.insert(sessions).values({ tokenHash: sha256(token), userId, expiresAt: new Date(Date.now() + SESSION_SECONDS * 1000) });
+  await db.insert(sessions).values({ tokenHash: sha256(token), userId, expiresAt: new Date(Date.now() + SESSION_IDLE_SECONDS * 1000) });
   await trimSessions(userId);
-  response.cookies.set(COOKIE, token, { httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "lax", path: "/", maxAge: SESSION_SECONDS });
+  response.cookies.set(COOKIE, token, { httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "lax", path: "/", maxAge: SESSION_ABSOLUTE_SECONDS });
 }
 export async function deleteSession(response: NextResponse) {
   const token = (await cookies()).get(COOKIE)?.value;
@@ -68,10 +70,23 @@ export async function deleteAllSessions(response: NextResponse) {
 export async function currentUser() {
   const token = (await cookies()).get(COOKIE)?.value;
   if (!token) return null;
-  const [result] = await db.select({ id: users.id, email: users.email }).from(sessions)
+  const tokenHash = sha256(token);
+  const now = new Date();
+  const [result] = await db.select({ id: users.id, email: users.email, createdAt: sessions.createdAt, expiresAt: sessions.expiresAt }).from(sessions)
     .innerJoin(users, eq(sessions.userId, users.id))
-    .where(and(eq(sessions.tokenHash, sha256(token)), gt(sessions.expiresAt, new Date()))).limit(1);
-  return result ?? null;
+    .where(eq(sessions.tokenHash, tokenHash)).limit(1);
+  if (!result) return null;
+  const absoluteExpiry = result.createdAt.getTime() + SESSION_ABSOLUTE_SECONDS * 1000;
+  if (result.expiresAt <= now || absoluteExpiry <= now.getTime()) {
+    await db.delete(sessions).where(eq(sessions.tokenHash, tokenHash));
+    return null;
+  }
+  // Slide the idle timeout forward, at most once per renewal window and never past the absolute lifetime.
+  if (result.expiresAt.getTime() < now.getTime() + (SESSION_IDLE_SECONDS - SESSION_RENEW_AFTER_SECONDS) * 1000) {
+    const expiresAt = new Date(Math.min(now.getTime() + SESSION_IDLE_SECONDS * 1000, absoluteExpiry));
+    await db.update(sessions).set({ expiresAt }).where(eq(sessions.tokenHash, tokenHash));
+  }
+  return { id: result.id, email: result.email };
 }
 export class ApiError extends Error { constructor(message: string, public status = 400) { super(message); } }
 export async function requireUser() {
