@@ -91,7 +91,24 @@ function mockRequest(request, response) {
   if (url.pathname === "/api/integration/merchant/settlements") {
     settlementRequests++;
     const page = Number(url.searchParams.get("page") || "1");
-    return send(response, 200, { ok: true, page, hasMore: endlessSettlements, settlements: [] });
+    // The parser stops on an empty page even when hasMore is claimed, so each
+    // page of the endless feed must carry a distinct, valid payout record.
+    const settlements = endlessSettlements ? [{
+      externalId: `pay_${run}_${page}`,
+      marketplaceOrderId: `order_${run}_${page}`,
+      orderNumber: page,
+      grossPaise: 10_000,
+      commissionPaise: 500,
+      refundPaise: 0,
+      adjustmentPaise: 0,
+      netPaise: 9_500,
+      currency: "INR",
+      status: "paid",
+      reference: `REF_${run}_${page}`,
+      paidAt: "2026-11-18T10:00:00Z",
+      updatedAt: "2026-11-18T10:00:00Z",
+    }] : [];
+    return send(response, 200, { ok: true, page, hasMore: endlessSettlements, settlements });
   }
   return send(response, 404, { ok: false, error: "not found" });
 }
@@ -188,7 +205,7 @@ try {
 } finally {
   try {
     if (userId && businessId) {
-      sql(`begin; delete from audit_logs where business_id='${businessId}' or actor_email_hash='${hash(email)}'; delete from business_marketplace_links where business_id='${businessId}'; delete from sessions where user_id='${userId}'; delete from businesses where id='${businessId}'; delete from users where id='${userId}'; commit;`);
+      sql(`begin; delete from audit_logs where business_id='${businessId}' or actor_email_hash='${hash(email)}'; delete from business_marketplace_links where business_id='${businessId}'; delete from settlements where business_id='${businessId}'; delete from sessions where user_id='${userId}'; delete from businesses where id='${businessId}'; delete from users where id='${userId}'; commit;`);
     }
   } catch (error) { console.error("Could not clean up paired flow test records:", error.message); process.exitCode = 1; }
   if (server) server.kill();
