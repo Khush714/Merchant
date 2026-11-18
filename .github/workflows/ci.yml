@@ -37,6 +37,7 @@ jobs:
       MARKETPLACE_API_URL: http://127.0.0.1:4100
       MERCHANT_APP_INTEGRATION_SECRET: ci-only-integration-secret-0123456789
       MERCHANT_APP_TOKEN_ENCRYPTION_KEY: ci-only-integration-encryption-key-0123456789
+      MARKETPLACE_ADMIN_TOKEN: ci-only-admin-token-0123456789
     steps:
       - name: Check out
         uses: actions/checkout@v4
