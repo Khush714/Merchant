@@ -2,7 +2,14 @@ import { and, asc, eq } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { menuItems } from "@/db/schema";
-import { getMarketplaceLink, marketplaceFetch } from "@/lib/marketplace-bridge";
+import {
+  getMarketplaceLink,
+  marketplaceFetch,
+  parseMarketplaceResponse,
+  parseRemoteMenu,
+  parseRemoteMenuItems,
+  parseRemoteOk,
+} from "@/lib/marketplace-bridge";
 import { ApiError, BODY_LIMITS, fail, readJson, requireBusiness, sameOrigin, textValue } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
@@ -19,8 +26,9 @@ export async function GET(request: NextRequest) {
   try {
     const { business } = await requireBusiness("menu.read");
     if (await getMarketplaceLink(business.id)) {
-      const remote = await marketplaceFetch<any>(business.id, "/api/integration/merchant/menu/items");
-      return NextResponse.json({ items: remote.items ?? [] }, { headers: { "Cache-Control": "no-store" } });
+      const remote = await marketplaceFetch(business.id, "/api/integration/merchant/menu/items");
+      const items = parseMarketplaceResponse(remote, (payload) => parseRemoteMenuItems(payload, business.id));
+      return NextResponse.json({ items }, { headers: { "Cache-Control": "no-store" } });
     }
     const items = await db.select().from(menuItems).where(and(eq(menuItems.businessId, business.id), eq(menuItems.archived, false))).orderBy(asc(menuItems.category), asc(menuItems.name)).limit(500);
     return NextResponse.json({ items });
@@ -30,8 +38,9 @@ export async function POST(request: NextRequest) {
   try {
     sameOrigin(request); const { business } = await requireBusiness("menu.write"); const body = await readJson(request, BODY_LIMITS.menu);
     if (await getMarketplaceLink(business.id)) {
-      const remote = await marketplaceFetch<any>(business.id, "/api/integration/merchant/menu/items", { method: "POST", body: JSON.stringify(body) });
-      return NextResponse.json({ item: remote.item }, { status: 201 });
+      const remote = await marketplaceFetch(business.id, "/api/integration/merchant/menu/items", { method: "POST", body: JSON.stringify(body) });
+      const item = parseMarketplaceResponse(remote, (payload) => parseRemoteMenu(payload, business.id));
+      return NextResponse.json({ item }, { status: 201 });
     }
     const [item] = await db.insert(menuItems).values({ ...values(body), businessId: business.id }).returning();
     return NextResponse.json({ item }, { status: 201 });
@@ -41,8 +50,9 @@ export async function PATCH(request: NextRequest) {
   try {
     sameOrigin(request); const { business } = await requireBusiness("menu.write"); const body = await readJson(request, BODY_LIMITS.menu);
     if (await getMarketplaceLink(business.id)) {
-      const remote = await marketplaceFetch<any>(business.id, "/api/integration/merchant/menu/items", { method: "PATCH", body: JSON.stringify(body) });
-      return NextResponse.json({ item: remote.item });
+      const remote = await marketplaceFetch(business.id, "/api/integration/merchant/menu/items", { method: "PATCH", body: JSON.stringify(body) });
+      const item = parseMarketplaceResponse(remote, (payload) => parseRemoteMenu(payload, business.id));
+      return NextResponse.json({ item });
     }
     if (typeof body.id !== "string" || !uuid.test(body.id)) throw new ApiError("Invalid item.");
     const scope = and(eq(menuItems.id, body.id), eq(menuItems.businessId, business.id), eq(menuItems.archived, false));
@@ -59,7 +69,8 @@ export async function DELETE(request: NextRequest) {
   try {
     sameOrigin(request); const { business } = await requireBusiness("menu.write"); const body = await readJson(request, BODY_LIMITS.menu);
     if (await getMarketplaceLink(business.id)) {
-      await marketplaceFetch<any>(business.id, "/api/integration/merchant/menu/items", { method: "DELETE", body: JSON.stringify(body) });
+      const remote = await marketplaceFetch(business.id, "/api/integration/merchant/menu/items", { method: "DELETE", body: JSON.stringify(body) });
+      parseMarketplaceResponse(remote, parseRemoteOk);
       return NextResponse.json({ ok: true });
     }
     if (typeof body.id !== "string" || !uuid.test(body.id)) throw new ApiError("Invalid item.");

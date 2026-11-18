@@ -5,8 +5,23 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { businessMarketplaceLinks } from "@/db/schema";
 import { MARKETPLACE_LINK_INVALID } from "@/lib/marketplace-link-status";
+import { MarketplacePayloadError, parseRemotePairing } from "@/lib/marketplace-payload";
 import { ApiError } from "@/lib/server";
 import { isLoopbackUrl } from "@/lib/urls";
+
+/** Paired route handlers share the pure parsers so every upstream response is checked. */
+export {
+  applyRemoteRestaurant,
+  parseRemoteFeedbackReply,
+  parseRemoteMenu,
+  parseRemoteMenuItems,
+  parseRemoteOffer,
+  parseRemoteOffers,
+  parseRemoteOk,
+  parseRemoteOrderMutation,
+  parseRemoteOrders,
+  parseRemoteRestaurantResponse,
+} from "@/lib/marketplace-payload";
 
 const VERSION = "v1";
 function encryptionKey(): Buffer {
@@ -82,6 +97,16 @@ export async function marketplaceFetch<T = any>(businessId: string, path: string
   return payload as T;
 }
 
+/** Every paired response goes through a pure parser; bad upstream shapes become a 502, never empty data. */
+export function parseMarketplaceResponse<T>(payload: unknown, parser: (payload: unknown) => T): T {
+  try {
+    return parser(payload);
+  } catch (error) {
+    if (error instanceof MarketplacePayloadError) throw new ApiError(error.message, 502, "MARKETPLACE_BAD_RESPONSE");
+    throw error;
+  }
+}
+
 export async function saveMarketplaceLink(input: {
   businessId: string;
   accessToken: string;
@@ -131,10 +156,11 @@ export async function pairWithMarketplace(businessId: string, code: string) {
       signal: AbortSignal.timeout(10_000),
     });
   } catch { throw new ApiError("Marketplace could not be reached. Check the URL and try again.", 502); }
-  const payload = await response.json().catch(() => null) as any;
-  if (!response.ok || !payload?.ok || typeof payload.accessToken !== "string" || !payload.restaurant) {
-    throw new ApiError(typeof payload?.error === "string" ? payload.error : "Marketplace pairing failed.", response.status >= 500 ? 502 : response.status || 502);
+  const payload = await response.json().catch(() => null) as (Record<string, unknown> | null);
+  if (!response.ok) {
+    throw new ApiError(payload && typeof payload.error === "string" ? payload.error : "Marketplace pairing failed.", response.status >= 500 ? 502 : response.status || 502);
   }
-  await saveMarketplaceLink({ businessId, accessToken: payload.accessToken, restaurant: payload.restaurant });
-  return { name: payload.restaurant.name, slug: payload.restaurant.slug, id: payload.restaurant.id };
+  const paired = parseMarketplaceResponse(payload, parseRemotePairing);
+  await saveMarketplaceLink({ businessId, accessToken: paired.accessToken, restaurant: paired.restaurant });
+  return { name: paired.restaurant.name, slug: paired.restaurant.slug, id: paired.restaurant.id };
 }

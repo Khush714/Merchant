@@ -3,41 +3,21 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { orderEvents, orderItems, orders } from "@/db/schema";
 import { dispatchCourierAssignment } from "@/lib/courier-dispatch";
-import { remoteFeedback } from "@/lib/feedback";
-import { getMarketplaceLink, marketplaceFetch } from "@/lib/marketplace-bridge";
+import {
+  getMarketplaceLink,
+  marketplaceFetch,
+  parseMarketplaceResponse,
+  parseRemoteOrderMutation,
+  parseRemoteOrders,
+} from "@/lib/marketplace-bridge";
 import { ApiError, BODY_LIMITS, fail, readJson, requireBusiness, sameOrigin, textValue } from "@/lib/server";
+import type { OrderStatus } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 const statuses = ["new", "accepted", "preparing", "ready", "out_for_delivery", "completed", "rejected", "cancelled"];
 const transitions: Record<string, string[]> = { new: ["accepted", "rejected"], accepted: ["preparing"], preparing: ["ready"], ready: ["out_for_delivery", "completed"], out_for_delivery: ["completed"] };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const toMarketplaceStatus: Record<string, string> = { new: "PLACED", accepted: "ACCEPTED", preparing: "PREPARING", ready: "READY", out_for_delivery: "OUT_FOR_DELIVERY", completed: "COMPLETED", rejected: "REJECTED", cancelled: "CANCELLED" };
-const fromMarketplaceStatus: Record<string, string> = { ...Object.fromEntries(Object.entries(toMarketplaceStatus).map(([local, remote]) => [remote, local])), DELIVERED: "completed" };
-function mapMarketplaceOrder(order: any, businessId: string) {
-  const feedback = remoteFeedback(order);
-  return {
-    id: String(order.code), orderNumber: String(order.code), businessId,
-    customerName: order.customerName || "Guest", customerNote: order.instructions || "",
-    total: Number(order.totalCents ?? 0), status: fromMarketplaceStatus[order.status] ?? "new",
-    fulfilment: String(order.fulfilment || "delivery").toLowerCase(), deliveryAddress: order.addressText || "",
-    paymentStatus: String(order.paymentStatus || "unpaid").toLowerCase(),
-    paymentMethod: order.paymentMethod === "cod" ? "cash on delivery" : String(order.paymentMethod || "online").toLowerCase(),
-    prepMinutes: order.prepMinutes ?? null, rejectionReason: order.rejectionReason || "",
-    offerId: null, offerCode: String(order.offerCode ?? order.promoCode ?? ""), discount: Number(order.discountCents ?? order.discount ?? 0),
-    rating: feedback?.rating ?? null, review: feedback?.review ?? "", feedbackAt: feedback?.feedbackAt ?? null,
-    merchantResponse: feedback?.merchantResponse ?? "", merchantRespondedAt: feedback?.merchantRespondedAt ?? null,
-    createdAt: order.createdAt, updatedAt: order.statusUpdatedAt || order.createdAt,
-    items: (Array.isArray(order.items) ? order.items : []).map((item: any, index: number) => {
-      const quantity = Number(item.quantity || 1);
-      const modifiers = Array.isArray(item.modifiers) ? item.modifiers.map((modifier: any) => ({
-        name: String(modifier.name || "Option"), quantity: Number(modifier.quantity || 1), priceCents: Number(modifier.priceCents || 0),
-      })) : [];
-      const unitPrice = Number(item.priceCents ?? item.unitPrice ?? 0);
-      const lineTotal = unitPrice * quantity + modifiers.reduce((sum: number, modifier: { priceCents: number; quantity: number }) => sum + modifier.priceCents * modifier.quantity, 0);
-      return { id: `${order.code}-${index}`, name: String(item.name || "Item"), quantity, unitPrice, lineTotal, modifiers };
-    }),
-  };
-}
 export async function GET(request: NextRequest) {
   try {
     const { business } = await requireBusiness("orders.read");
@@ -49,9 +29,10 @@ export async function GET(request: NextRequest) {
       const from = p.get("from"), to = p.get("to");
       if (from && /^\d{4}-\d{2}-\d{2}$/.test(from)) remoteParams.set("from", from);
       if (to && /^\d{4}-\d{2}-\d{2}$/.test(to)) remoteParams.set("to", to);
-      const remote = await marketplaceFetch<any>(business.id, `/api/integration/merchant/orders?${remoteParams}`);
-      const mapped = (remote.orders ?? []).map((order: any) => mapMarketplaceOrder(order, business.id));
-      return NextResponse.json({ orders: status === "feedback" ? mapped.filter((order: any) => order.feedbackAt) : mapped, hasMore: Boolean(remote.hasMore), page: remote.page ?? 1 });
+      const remote = await marketplaceFetch(business.id, `/api/integration/merchant/orders?${remoteParams}`);
+      const parsed = parseMarketplaceResponse(remote, (payload) => parseRemoteOrders(payload, business.id));
+      const mapped = status === "feedback" ? parsed.orders.filter((order) => order.feedbackAt) : parsed.orders;
+      return NextResponse.json({ orders: mapped, hasMore: parsed.hasMore, page: parsed.page });
     }
     const page = Math.max(1, Math.min(1000, Number(p.get("page")) || 1));
     const limit = Math.max(1, Math.min(50, Number(p.get("limit")) || 20));
@@ -80,15 +61,12 @@ export async function PATCH(request: NextRequest) {
       if (await getMarketplaceLink(business.id)) {
         const orderCode = typeof body.orderCode === "string" ? body.orderCode : typeof body.id === "string" ? body.id : "";
         if (!orderCode) throw new ApiError("Order not found.", 404);
-        const remote = await marketplaceFetch<any>(business.id, "/api/integration/merchant/orders", {
+        const remote = await marketplaceFetch(business.id, "/api/integration/merchant/orders", {
           method: "PATCH",
           body: JSON.stringify({ orderCode, fulfilment, ...(addressText ? { addressText } : {}) }),
         });
-        return NextResponse.json({
-          order: remote.order
-            ? { ...remote.order, id: String(remote.order.code), fulfilment: remote.order.fulfilment === "pickup" ? "pickup" : fulfilment, deliveryAddress: remote.order.addressText || addressText }
-            : { id: orderCode, fulfilment, deliveryAddress: addressText },
-        });
+        const order = parseMarketplaceResponse(remote, (payload) => parseRemoteOrderMutation(payload, { id: orderCode, fulfilment, addressText }));
+        return NextResponse.json({ order });
       }
       if (typeof body.id !== "string" || !uuid.test(body.id)) throw new ApiError("Order not found.", 404);
       const updated = await db.transaction(async (tx) => {
@@ -121,11 +99,12 @@ export async function PATCH(request: NextRequest) {
       const expectedStatus = typeof body.expectedStatus === "string" ? body.expectedStatus : "";
       const nextStatus = typeof body.nextStatus === "string" ? body.nextStatus : "";
       if (!orderCode || !toMarketplaceStatus[expectedStatus] || !toMarketplaceStatus[nextStatus] || !transitions[expectedStatus]?.includes(nextStatus)) throw new ApiError("Invalid order transition.");
-      const remote = await marketplaceFetch<any>(business.id, "/api/integration/merchant/orders", {
+      const remote = await marketplaceFetch(business.id, "/api/integration/merchant/orders", {
         method: "PATCH",
         body: JSON.stringify({ orderCode, expectedStatus: toMarketplaceStatus[expectedStatus], nextStatus: toMarketplaceStatus[nextStatus], ...(body.prepMinutes === undefined ? {} : { prepMinutes: Number(body.prepMinutes) }), ...(typeof body.reason === "string" ? { reason: body.reason } : {}) }),
       });
-      return NextResponse.json({ order: remote.order ? { ...remote.order, id: String(remote.order.code), status: fromMarketplaceStatus[remote.order.status] ?? nextStatus } : { id: orderCode, status: nextStatus } });
+      const order = parseMarketplaceResponse(remote, (payload) => parseRemoteOrderMutation(payload, { id: orderCode, status: nextStatus as OrderStatus }));
+      return NextResponse.json({ order });
     }
     if (typeof body.id !== "string" || !uuid.test(body.id) || typeof body.expectedStatus !== "string" || typeof body.nextStatus !== "string" || !transitions[body.expectedStatus]?.includes(body.nextStatus)) throw new ApiError("Invalid order transition.");
     const reason = textValue(body.reason, 250);

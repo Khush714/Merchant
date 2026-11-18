@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { businessMarketplaceLinks } from "@/db/schema";
-import { getMarketplaceLink, marketplaceFetch, pairWithMarketplace } from "@/lib/marketplace-bridge";
+import { getMarketplaceLink, marketplaceFetch, pairWithMarketplace, parseMarketplaceResponse, parseRemoteOk } from "@/lib/marketplace-bridge";
 import { isInvalidMarketplaceLinkError } from "@/lib/marketplace-link-status";
 import { ApiError, BODY_LIMITS, fail, readJson, recordAudit, requireBusiness, sameOrigin, textValue } from "@/lib/server";
 
@@ -16,7 +16,8 @@ export async function GET(request: NextRequest) {
     let valid: boolean | null = null;
     if (link) {
       try {
-        await marketplaceFetch(business.id, "/api/integration/merchant/overview");
+        const remote = await marketplaceFetch(business.id, "/api/integration/merchant/overview");
+        parseMarketplaceResponse(remote, parseRemoteOk);
         valid = true;
       } catch (error) {
         // Only a definitive upstream rejection means the link is dead. Network or
@@ -67,7 +68,8 @@ export async function DELETE(request: NextRequest) {
 
     let remote = "revoked";
     try {
-      await marketplaceFetch(business.id, "/api/integration/merchant/link", { method: "DELETE" });
+      remote = await marketplaceFetch(business.id, "/api/integration/merchant/link", { method: "DELETE" });
+      parseMarketplaceResponse(remote, parseRemoteOk);
     } catch (error) {
       const status = error instanceof ApiError ? error.status : 0;
       // A 401 means Marketplace no longer recognises the token, so its side is already gone and

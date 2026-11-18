@@ -3,7 +3,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { offers, orders } from "@/db/schema";
 import { isUniqueViolation } from "@/lib/db-errors";
-import { getMarketplaceLink, marketplaceFetch } from "@/lib/marketplace-bridge";
+import {
+  getMarketplaceLink,
+  marketplaceFetch,
+  parseMarketplaceResponse,
+  parseRemoteOffer,
+  parseRemoteOffers,
+  parseRemoteOk,
+} from "@/lib/marketplace-bridge";
 import { offerDto, parseOfferInput } from "@/lib/offers";
 import { ApiError, BODY_LIMITS, fail, readJson, requireBusiness, sameOrigin, textValue } from "@/lib/server";
 import type { OfferInput } from "@/lib/types";
@@ -33,8 +40,9 @@ export async function GET(request: NextRequest) {
   try {
     const { business } = await requireBusiness("offers.read");
     if (await getMarketplaceLink(business.id)) {
-      const remote = await marketplaceFetch<any>(business.id, "/api/integration/merchant/offers");
-      return NextResponse.json({ offers: remote.offers ?? [] }, { headers: { "Cache-Control": "no-store" } });
+      const remote = await marketplaceFetch(business.id, "/api/integration/merchant/offers");
+      const parsed = parseMarketplaceResponse(remote, (payload) => parseRemoteOffers(payload, business.id));
+      return NextResponse.json({ offers: parsed }, { headers: { "Cache-Control": "no-store" } });
     }
     const rows = await db.select({
       offer: offers,
@@ -58,8 +66,9 @@ export async function POST(request: NextRequest) {
   try {
     sameOrigin(request); const { business } = await requireBusiness("offers.write"); const body = await readJson(request, BODY_LIMITS.offers);
     if (await getMarketplaceLink(business.id)) {
-      const remote = await marketplaceFetch<any>(business.id, "/api/integration/merchant/offers", { method: "POST", body: JSON.stringify(body) });
-      return NextResponse.json({ offer: remote.offer }, { status: 201 });
+      const remote = await marketplaceFetch(business.id, "/api/integration/merchant/offers", { method: "POST", body: JSON.stringify(body) });
+      const offer = parseMarketplaceResponse(remote, (payload) => parseRemoteOffer(payload, business.id));
+      return NextResponse.json({ offer }, { status: 201 });
     }
     const input = inputFrom(body);
     try {
@@ -76,8 +85,9 @@ export async function PATCH(request: NextRequest) {
   try {
     sameOrigin(request); const { business } = await requireBusiness("offers.write"); const body = await readJson(request, BODY_LIMITS.offers);
     if (await getMarketplaceLink(business.id)) {
-      const remote = await marketplaceFetch<any>(business.id, "/api/integration/merchant/offers", { method: "PATCH", body: JSON.stringify(body) });
-      return NextResponse.json({ offer: remote.offer });
+      const remote = await marketplaceFetch(business.id, "/api/integration/merchant/offers", { method: "PATCH", body: JSON.stringify(body) });
+      const offer = parseMarketplaceResponse(remote, (payload) => parseRemoteOffer(payload, business.id));
+      return NextResponse.json({ offer });
     }
     const id = offerIdFrom(body);
     const [existing] = await db.select().from(offers).where(and(eq(offers.id, id), eq(offers.businessId, business.id), eq(offers.archived, false))).limit(1);
@@ -101,7 +111,8 @@ export async function DELETE(request: NextRequest) {
   try {
     sameOrigin(request); const { business } = await requireBusiness("offers.write"); const body = await readJson(request, BODY_LIMITS.offers);
     if (await getMarketplaceLink(business.id)) {
-      await marketplaceFetch<any>(business.id, "/api/integration/merchant/offers", { method: "DELETE", body: JSON.stringify(body) });
+      const remote = await marketplaceFetch(business.id, "/api/integration/merchant/offers", { method: "DELETE", body: JSON.stringify(body) });
+      parseMarketplaceResponse(remote, parseRemoteOk);
       return NextResponse.json({ ok: true });
     }
     const id = offerIdFrom(body);

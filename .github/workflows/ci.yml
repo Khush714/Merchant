@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, prod/merchant-integration]
   pull_request:
 
 concurrency:
@@ -34,6 +34,8 @@ jobs:
     env:
       DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/app_db
       APP_ORIGIN: http://127.0.0.1:3000
+      MARKETPLACE_API_URL: http://127.0.0.1:4100
+      MERCHANT_APP_INTEGRATION_SECRET: ci-only-integration-secret-0123456789
       MERCHANT_APP_TOKEN_ENCRYPTION_KEY: ci-only-integration-encryption-key-0123456789
     steps:
       - name: Check out

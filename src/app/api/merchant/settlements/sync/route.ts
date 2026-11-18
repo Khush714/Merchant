@@ -9,16 +9,18 @@ export async function POST(request: NextRequest) {
   try {
     sameOrigin(request);
     await rateLimit(request, "settlement-sync", 12);
-    const { business } = await requireBusiness("integration.write");
+    const { business } = await requireBusiness("settlements.read");
     try {
       const result = await syncMarketplaceSettlements(business.id, { force: true });
-      await recordAudit({ request, event: "settlement.sync", outcome: "success", businessId: business.id, detail: { source: "manual", received: result.received, applied: result.applied } });
+      await recordAudit({ request, event: "settlement.sync", outcome: "success", businessId: business.id, detail: { source: "manual", received: result.received, applied: result.applied, truncated: result.truncated } });
       return NextResponse.json({
         synced: true,
         received: result.received,
         applied: result.applied,
         skipped: result.skipped,
+        truncated: result.truncated,
         lastSyncedAt: result.lastSyncedAt?.toISOString() ?? null,
+        ...(result.truncated ? { message: "Showing the newest 2,000 payouts. Older records remain in Marketplace." } : {}),
       }, { headers: { "Cache-Control": "no-store" } });
     } catch (error) {
       await recordAudit({ request, event: "settlement.sync", outcome: "failure", businessId: business.id, detail: { source: "manual", reason: error instanceof ApiError ? error.message : "sync_failed" } });

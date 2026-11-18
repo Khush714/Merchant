@@ -2,8 +2,8 @@ import { and, eq } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { orderEvents, orders } from "@/db/schema";
-import { MAX_REVIEW_CHARS, feedbackDto, remoteFeedback } from "@/lib/feedback";
-import { getMarketplaceLink, marketplaceFetch } from "@/lib/marketplace-bridge";
+import { MAX_REVIEW_CHARS, feedbackDto } from "@/lib/feedback";
+import { getMarketplaceLink, marketplaceFetch, parseMarketplaceResponse, parseRemoteFeedbackReply } from "@/lib/marketplace-bridge";
 import { ApiError, BODY_LIMITS, fail, readJson, requireBusiness, sameOrigin, textValue } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
@@ -21,11 +21,12 @@ export async function PATCH(request: NextRequest) {
     if (await getMarketplaceLink(business.id)) {
       const orderCode = textValue(body.orderCode ?? body.id, 100);
       if (!orderCode) throw new ApiError("Order not found.", 404);
-      const remote = await marketplaceFetch<any>(business.id, "/api/integration/merchant/orders/feedback", {
+      const remote = await marketplaceFetch(business.id, "/api/integration/merchant/orders/feedback", {
         method: "PATCH",
         body: JSON.stringify({ orderCode, response: reply }),
       });
-      return NextResponse.json({ feedback: remoteFeedback(remote.order ?? remote.feedback ?? remote), proxied: true });
+      const feedback = parseMarketplaceResponse(remote, parseRemoteFeedbackReply);
+      return NextResponse.json({ feedback, proxied: true });
     }
 
     const id = textValue(body.id, 50);

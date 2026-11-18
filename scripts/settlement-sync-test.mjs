@@ -21,6 +21,8 @@ const email = `settlement-${run}@example.test`;
 const password = `T3st-${run}`;
 const externalId = `pay_${run}`;
 const marketplaceOrderId = `order_${run}`;
+const secondExternalId = `pay_page2_${run}`;
+const secondMarketplaceOrderId = `order_page2_${run}`;
 const reference = `PAYOUT_${run}`;
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 
@@ -78,20 +80,31 @@ const original = {
   updatedAt: "2026-11-17T10:00:01Z",
 };
 let feed = { settlements: [original] };
+let secondPage = null;
 function mockRequest(request, response) {
-  if (request.url !== "/api/integration/merchant/settlements" || request.headers.authorization !== `Bearer ${token}`) {
+  const url = new URL(request.url, mockBase);
+  if (url.pathname !== "/api/integration/merchant/settlements" || request.headers.authorization !== `Bearer ${token}`) {
     response.writeHead(404, { "content-type": "application/json" });
     response.end(JSON.stringify({ error: "not found" }));
     return;
   }
+  const page = Number(url.searchParams.get("page") || "1");
+  const rows = page === 2 ? secondPage : feed.settlements;
+  if (!rows) {
+    response.writeHead(404, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: "page not found" }));
+    return;
+  }
   response.writeHead(200, { "content-type": "application/json" });
-  response.end(JSON.stringify(feed));
+  response.end(JSON.stringify({ ok: true, page, hasMore: page === 1 && Boolean(secondPage), settlements: rows }));
 }
 let server, mock, certDir;
 let userId, businessId;
 try {
   const secret = process.env.MERCHANT_APP_TOKEN_ENCRYPTION_KEY || "ci-only-integration-encryption-key-0123456789";
   if (secret.trim().length < 32) throw new Error("Token encryption key is too short.");
+  const integrationSecret = process.env.MERCHANT_APP_INTEGRATION_SECRET || "ci-only-integration-secret-0123456789";
+  if (integrationSecret.trim().length < 32) throw new Error("Integration secret is too short.");
   certDir = mkdtempSync(join(tmpdir(), "savour-settlement-"));
   const keyPath = join(certDir, "key.pem"), certPath = join(certDir, "cert.pem");
   const generated = spawnSync(opensslCommand(), ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", keyPath, "-out", certPath, "-days", "1", "-subj", "/CN=127.0.0.1"], { encoding: "utf8" });
@@ -107,6 +120,7 @@ try {
       APP_ORIGIN: appOrigin,
       MARKETPLACE_API_URL: mockBase,
       MERCHANT_APP_TOKEN_ENCRYPTION_KEY: secret,
+      MERCHANT_APP_INTEGRATION_SECRET: integrationSecret,
       NODE_TLS_REJECT_UNAUTHORIZED: "0",
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -151,11 +165,26 @@ try {
   assert.equal(scalar(`select amount from settlements where external_id='${externalId}'`), "67000");
   assert.ok(Number(scalar(`select count(*) from audit_logs where event='settlement.sync' and outcome='success' and business_id='${businessId}'`)) >= 4);
 
-  console.log("PASS: idempotent Marketplace settlement sync with stale-feed protection");
+  secondPage = [{
+    ...original,
+    externalId: secondExternalId,
+    marketplaceOrderId: secondMarketplaceOrderId,
+    reference: `PAGE2_${run}`,
+    paidAt: "2026-11-18T12:00:00Z",
+    updatedAt: "2026-11-18T12:00:01Z",
+  }];
+  const paged = await api("/api/merchant/settlements/sync", { cookie, method: "POST" });
+  assert.equal(paged.status, 200, JSON.stringify(paged.data));
+  assert.equal(paged.data.received, 2, "both authoritative pages must be read");
+  assert.equal(paged.data.applied, 1, "only the new page-2 record should be inserted");
+  assert.equal(scalar(`select reference from settlements where external_id='${secondExternalId}'`), `PAGE2_${run}`);
+  assert.equal(paged.data.truncated, false);
+
+  console.log("PASS: paginated, idempotent Marketplace settlement sync with stale-feed protection");
 } finally {
   try {
     if (userId && businessId) {
-      sql(`begin; delete from audit_logs where business_id='${businessId}' or actor_email_hash='${hash(email)}'; delete from business_marketplace_links where business_id='${businessId}'; delete from settlements where external_id='${externalId}'; delete from sessions where user_id='${userId}'; delete from businesses where id='${businessId}'; delete from users where id='${userId}'; commit;`);
+      sql(`begin; delete from audit_logs where business_id='${businessId}' or actor_email_hash='${hash(email)}'; delete from business_marketplace_links where business_id='${businessId}'; delete from settlements where external_id in ('${externalId}','${secondExternalId}'); delete from sessions where user_id='${userId}'; delete from businesses where id='${businessId}'; delete from users where id='${userId}'; commit;`);
     }
   } catch (error) { console.error("Could not clean up settlement sync test records:", error.message); process.exitCode = 1; }
   if (server) server.kill();

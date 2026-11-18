@@ -40,9 +40,10 @@ export type Settlement = {
 };
 export type SettlementSync = {
   linked: boolean;
-  status: "idle" | "synced" | "error";
+  status: "idle" | "synced" | "throttled" | "truncated" | "error";
   lastSyncedAt: string | null;
   message?: string;
+  canRetry?: boolean;
 };
 export type Overview = {
   counts: Record<OrderStatus, number>;

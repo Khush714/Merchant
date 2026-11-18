@@ -21,7 +21,7 @@ export type ParsedSettlement = {
   updatedAt: string;
 };
 
-const MAX_SETTLEMENTS = 200;
+export const MAX_SETTLEMENTS = 200;
 const MAX_PAISE = 2_147_483_647;
 const ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
 const STATUSES: readonly SettlementStatus[] = ["pending", "paid", "failed", "reversed"];
@@ -102,4 +102,27 @@ export function parseSettlementPayload(payload: unknown): ParsedSettlement[] {
     externalIds.add(row.externalId);
   }
   return rows;
+}
+
+export type ParsedSettlementPage = {
+  rows: ParsedSettlement[];
+  page: number;
+  hasMore: boolean;
+};
+
+/**
+ * The authoritative feed is paginated so the 200-row validation boundary is a page
+ * size, not a hard ceiling on mirrored history. Older responses without `hasMore`
+ * remain valid single-page feeds.
+ */
+export function parseSettlementPage(payload: unknown): ParsedSettlementPage {
+  const root = record(payload, "Settlement payload");
+  if (root.hasMore !== undefined && typeof root.hasMore !== "boolean") fail("Settlement hasMore flag is invalid.");
+  if (root.page !== undefined && (!Number.isSafeInteger(root.page) || (root.page as number) < 1)) fail("Settlement page is invalid.");
+  const rows = parseSettlementPayload(payload);
+  return {
+    rows,
+    page: (root.page as number | undefined) ?? 1,
+    hasMore: root.hasMore === true && rows.length > 0,
+  };
 }

@@ -10,11 +10,13 @@
     "test:settlements": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/settlement-payload-test.mjs",
     "test:provider-events": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/provider-event-test.mjs",
     "test:urls": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/url-test.mjs",
+    "test:config": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/config-test.mjs",
     "test:settlement-sync": "node scripts/settlement-sync-test.mjs",
+    "test:paired-flow": "node scripts/paired-flow-test.mjs",
     "test:verification-gate": "node scripts/verification-gate-test.mjs",
     "test:link-status": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/link-status-test.mjs",
     "audit:prune": "node scripts/prune-audit-logs.mjs",
-    "test": "npm run test:settlements && npm run test:provider-events && npm run test:urls && node scripts/integration-test.mjs && npm run test:settlement-sync"
+    "test": "npm run test:settlements && npm run test:provider-events && npm run test:urls && npm run test:config && node scripts/integration-test.mjs && npm run test:settlement-sync && npm run test:paired-flow"
   },
   "dependencies": {
     "baseline-browser-mapping": "^2.11.33",
