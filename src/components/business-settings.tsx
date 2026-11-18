@@ -13,7 +13,7 @@ export function BusinessSettings({ business, onSave }: { business: Business; onS
 }
 
 
-type MarketplaceLinkState = { linked: boolean; restaurant: { id: number; name: string; slug: string } | null; connectedAt?: string | null };
+type MarketplaceLinkState = { linked: boolean; valid?: boolean | null; restaurant: { id: number; name: string; slug: string } | null; connectedAt?: string | null; updatedAt?: string | null };
 function MarketplaceConnection() {
   const [link, setLink] = useState<MarketplaceLinkState>({ linked: false, restaurant: null });
   const [code, setCode] = useState("");
@@ -32,7 +32,7 @@ function MarketplaceConnection() {
     event.preventDefault(); setBusy(true); setMessage("");
     try {
       const result = await api<MarketplaceLinkState>("/api/merchant/marketplace-link", { method: "POST", body: JSON.stringify({ code: code.trim() }) });
-      setLink(result); setCode(""); window.dispatchEvent(new Event("savour-marketplace-link-changed")); setMessage("Marketplace connected. Menu and orders will now use the Marketplace records.");
+      setLink({ ...result, valid: true }); setCode(""); window.dispatchEvent(new Event("savour-marketplace-link-changed")); setMessage("Marketplace connected. Menu and orders will now use the Marketplace records.");
     } catch (error) {
       // A pairing code is consumed even when the local save fails; never leave it in the input for a retry.
       setCode("");
@@ -44,13 +44,13 @@ function MarketplaceConnection() {
   async function disconnect() {
     if (!window.confirm("Disconnect this business from the Marketplace? New Marketplace orders will no longer appear here.")) return;
     setBusy(true); setMessage("");
-    try { await api("/api/merchant/marketplace-link", { method: "DELETE" }); setLink({ linked: false, restaurant: null }); window.dispatchEvent(new Event("savour-marketplace-link-changed")); setMessage("Marketplace disconnected."); }
+    try { await api("/api/merchant/marketplace-link", { method: "DELETE" }); setLink({ linked: false, valid: null, restaurant: null }); window.dispatchEvent(new Event("savour-marketplace-link-changed")); setMessage("Marketplace disconnected."); }
     catch (error) { setMessage(error instanceof Error ? error.message : "Could not disconnect Marketplace."); }
     finally { setBusy(false); }
   }
   return <section className="panel settings-panel">
     <div className="section-heading"><div><h3>Marketplace connection</h3><p>Connect this workspace to the canonical Savour Marketplace listing.</p></div><span className="settings-icon"><Link2 size={19} /></span></div>
-    {loading ? <p className="dialog-copy">Checking connection…</p> : link.linked && link.restaurant ? <><div className="info-box"><strong>{link.restaurant.name}</strong><br />Connected listing: <span>{link.restaurant.slug}</span><br /><span>Menus and orders are managed by the Marketplace backend.</span></div><button type="button" className="btn btn-outline" disabled={busy} onClick={disconnect}><Unplug size={16} /> {busy ? "Disconnecting…" : "Disconnect Marketplace"}</button></> : <form className="form-stack" onSubmit={connect}><p className="dialog-copy">In your Marketplace partner console, open <strong>Merchant App</strong>, generate a one-time pairing code, and paste it here. The code expires after 10 minutes.</p><label>One-time pairing code<input required minLength={24} maxLength={128} autoComplete="off" value={code} onChange={(event) => setCode(event.target.value.trim())} placeholder="Paste pairing code" /></label><button className="btn btn-primary" disabled={busy || !code.trim()}><Link2 size={16} /> {busy ? "Connecting…" : "Connect Marketplace"}</button><button type="button" className="btn btn-outline" disabled={loading || busy} onClick={() => { setLoading(true); void refresh(); }}><RefreshCw size={15} /> Refresh connection</button></form>}
+    {loading ? <p className="dialog-copy">Checking connection…</p> : link.linked && link.restaurant ? <>{link.valid === false && <div className="reconnect-warning"><RefreshCw size={16} /><div><strong>Reconnect needed</strong><span>The Marketplace no longer recognizes this connection. Disconnect it, generate a fresh pairing code in the partner console, then connect again.</span></div></div>}<div className="info-box"><strong>{link.restaurant.name}</strong><br />Connected listing: <span>{link.restaurant.slug}</span><br /><span>Menus and orders are managed by the Marketplace backend.</span></div><button type="button" className="btn btn-outline" disabled={busy} onClick={disconnect}><Unplug size={16} /> {busy ? "Disconnecting…" : "Disconnect Marketplace"}</button></> : <form className="form-stack" onSubmit={connect}><p className="dialog-copy">In your Marketplace partner console, open <strong>Merchant App</strong>, generate a one-time pairing code, and paste it here. The code expires after 10 minutes.</p><label>One-time pairing code<input required minLength={24} maxLength={128} autoComplete="off" value={code} onChange={(event) => setCode(event.target.value.trim())} placeholder="Paste pairing code" /></label><button className="btn btn-primary" disabled={busy || !code.trim()}><Link2 size={16} /> {busy ? "Connecting…" : "Connect Marketplace"}</button><button type="button" className="btn btn-outline" disabled={loading || busy} onClick={() => { setLoading(true); void refresh(); }}><RefreshCw size={15} /> Refresh connection</button></form>}
     {message && <p className="settings-message" role="status">{message}</p>}
   </section>;
 }

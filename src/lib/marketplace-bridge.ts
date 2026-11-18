@@ -4,7 +4,9 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { businessMarketplaceLinks } from "@/db/schema";
+import { MARKETPLACE_LINK_INVALID } from "@/lib/marketplace-link-status";
 import { ApiError } from "@/lib/server";
+import { isLoopbackUrl } from "@/lib/urls";
 
 const VERSION = "v1";
 function encryptionKey(): Buffer {
@@ -43,7 +45,7 @@ export function marketplaceApiBase(): string {
   if (!raw) throw new ApiError("Marketplace URL is not configured on the Merchant App.", 503);
   let url: URL;
   try { url = new URL(raw); } catch { throw new ApiError("Marketplace URL is invalid.", 503); }
-  if (url.protocol !== "https:" && process.env.NODE_ENV === "production") {
+  if (url.protocol !== "https:" && process.env.NODE_ENV === "production" && !isLoopbackUrl(url)) {
     throw new ApiError("Marketplace URL must use HTTPS in production.", 503);
   }
   return url.toString().replace(/\/$/, "");
@@ -66,6 +68,14 @@ export async function marketplaceFetch<T = any>(businessId: string, path: string
   }
   const payload = await response.json().catch(() => null) as (Record<string, unknown> | null);
   if (!response.ok) {
+    if (response.status === 401) {
+      // Marketplace authenticates every integration call with the per-business
+      // token minted at pairing time. A 401 means that token is no longer in
+      // its link table (revoked, re-paired elsewhere, or the wrong deployment).
+      // The encrypted copy in Merchant cannot be repaired locally: re-pairing
+      // with a fresh one-time code is the only safe recovery.
+      throw new ApiError("Your Marketplace connection is no longer valid. Reconnect this business from Business settings → Marketplace connection.", 401, MARKETPLACE_LINK_INVALID);
+    }
     const message = payload && typeof payload.error === "string" ? payload.error : "Marketplace request failed.";
     throw new ApiError(message, response.status >= 500 ? 502 : response.status);
   }

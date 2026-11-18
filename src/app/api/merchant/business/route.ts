@@ -7,7 +7,7 @@ import { ApiError, BODY_LIMITS, fail, readJson, requireBusiness, requireUser, sa
 
 export const dynamic = "force-dynamic";
 export async function GET(request: NextRequest) {
-  try { const { business } = await requireBusiness(); return NextResponse.json({ business }); }
+  try { const { business } = await requireBusiness("overview.read"); return NextResponse.json({ business }); }
   catch (error) { return fail(error, request); }
 }
 export async function POST(request: NextRequest) {
@@ -30,7 +30,7 @@ export async function POST(request: NextRequest) {
 export async function PATCH(request: NextRequest) {
   try {
     sameOrigin(request);
-    const { business } = await requireBusiness();
+    const { business } = await requireBusiness("settings.write");
     const body = await readJson(request, BODY_LIMITS.business);
     const linked = Boolean(await getMarketplaceLink(business.id));
     if (body.action === "availability") {

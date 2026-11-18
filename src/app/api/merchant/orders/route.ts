@@ -1,7 +1,9 @@
-import { and, desc, eq, gte, inArray, lt, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, lt, sql, type SQL } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { orderEvents, orderItems, orders } from "@/db/schema";
+import { dispatchCourierAssignment } from "@/lib/courier-dispatch";
+import { remoteFeedback } from "@/lib/feedback";
 import { getMarketplaceLink, marketplaceFetch } from "@/lib/marketplace-bridge";
 import { ApiError, BODY_LIMITS, fail, readJson, requireBusiness, sameOrigin, textValue } from "@/lib/server";
 
@@ -12,6 +14,7 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const toMarketplaceStatus: Record<string, string> = { new: "PLACED", accepted: "ACCEPTED", preparing: "PREPARING", ready: "READY", out_for_delivery: "OUT_FOR_DELIVERY", completed: "COMPLETED", rejected: "REJECTED", cancelled: "CANCELLED" };
 const fromMarketplaceStatus: Record<string, string> = { ...Object.fromEntries(Object.entries(toMarketplaceStatus).map(([local, remote]) => [remote, local])), DELIVERED: "completed" };
 function mapMarketplaceOrder(order: any, businessId: string) {
+  const feedback = remoteFeedback(order);
   return {
     id: String(order.code), orderNumber: String(order.code), businessId,
     customerName: order.customerName || "Guest", customerNote: order.instructions || "",
@@ -20,6 +23,9 @@ function mapMarketplaceOrder(order: any, businessId: string) {
     paymentStatus: String(order.paymentStatus || "unpaid").toLowerCase(),
     paymentMethod: order.paymentMethod === "cod" ? "cash on delivery" : String(order.paymentMethod || "online").toLowerCase(),
     prepMinutes: order.prepMinutes ?? null, rejectionReason: order.rejectionReason || "",
+    offerId: null, offerCode: String(order.offerCode ?? order.promoCode ?? ""), discount: Number(order.discountCents ?? order.discount ?? 0),
+    rating: feedback?.rating ?? null, review: feedback?.review ?? "", feedbackAt: feedback?.feedbackAt ?? null,
+    merchantResponse: feedback?.merchantResponse ?? "", merchantRespondedAt: feedback?.merchantRespondedAt ?? null,
     createdAt: order.createdAt, updatedAt: order.statusUpdatedAt || order.createdAt,
     items: (Array.isArray(order.items) ? order.items : []).map((item: any, index: number) => {
       const quantity = Number(item.quantity || 1);
@@ -34,10 +40,10 @@ function mapMarketplaceOrder(order: any, businessId: string) {
 }
 export async function GET(request: NextRequest) {
   try {
-    const { business } = await requireBusiness();
+    const { business } = await requireBusiness("orders.read");
     const p = request.nextUrl.searchParams, status = p.get("status") || "active", search = (p.get("search") || "").trim().slice(0, 20);
     if (await getMarketplaceLink(business.id)) {
-      const remoteStatus = status === "new" ? "PLACED" : status === "cancelled" ? "cancelled" : status === "active" || status === "all" ? status : (toMarketplaceStatus[status] ?? status);
+      const remoteStatus = status === "feedback" ? "all" : status === "new" ? "PLACED" : status === "cancelled" ? "cancelled" : status === "active" || status === "all" ? status : (toMarketplaceStatus[status] ?? status);
       const remoteParams = new URLSearchParams({ status: remoteStatus, page: String(Math.max(1, Math.min(1000, Number(p.get("page")) || 1))), limit: String(Math.max(1, Math.min(50, Number(p.get("limit")) || 20))) });
       if (search) remoteParams.set("search", search);
       const from = p.get("from"), to = p.get("to");
@@ -45,13 +51,14 @@ export async function GET(request: NextRequest) {
       if (to && /^\d{4}-\d{2}-\d{2}$/.test(to)) remoteParams.set("to", to);
       const remote = await marketplaceFetch<any>(business.id, `/api/integration/merchant/orders?${remoteParams}`);
       const mapped = (remote.orders ?? []).map((order: any) => mapMarketplaceOrder(order, business.id));
-      return NextResponse.json({ orders: mapped, hasMore: Boolean(remote.hasMore), page: remote.page ?? 1 });
+      return NextResponse.json({ orders: status === "feedback" ? mapped.filter((order: any) => order.feedbackAt) : mapped, hasMore: Boolean(remote.hasMore), page: remote.page ?? 1 });
     }
     const page = Math.max(1, Math.min(1000, Number(p.get("page")) || 1));
     const limit = Math.max(1, Math.min(50, Number(p.get("limit")) || 20));
     const filters: SQL[] = [eq(orders.businessId, business.id)];
     if (status === "active") filters.push(inArray(orders.status, ["new", "accepted", "preparing", "ready", "out_for_delivery"]));
     else if (status === "cancelled") filters.push(inArray(orders.status, ["cancelled", "rejected"]));
+    else if (status === "feedback") filters.push(isNotNull(orders.feedbackAt));
     else if (status !== "all") { if (!statuses.includes(status)) throw new ApiError("Invalid status."); filters.push(eq(orders.status, status)); }
     if (search) filters.push(sql`${orders.orderNumber}::text LIKE ${`%${search.replace(/[^0-9]/g, "")}%`}`);
     const from = p.get("from"), to = p.get("to");
@@ -65,7 +72,7 @@ export async function GET(request: NextRequest) {
 }
 export async function PATCH(request: NextRequest) {
   try {
-    sameOrigin(request); const { user, business } = await requireBusiness(); const body = await readJson(request, BODY_LIMITS.orders);
+    sameOrigin(request); const { user, business } = await requireBusiness("orders.write"); const body = await readJson(request, BODY_LIMITS.orders);
     if (body.fulfilment !== undefined) {
       const fulfilment = body.fulfilment;
       if (fulfilment !== "pickup" && fulfilment !== "delivery") throw new ApiError("Choose pickup or delivery.");
@@ -138,6 +145,9 @@ export async function PATCH(request: NextRequest) {
       await tx.insert(orderEvents).values({ orderId: result.id, actorId: user.id, fromStatus: body.expectedStatus, toStatus: body.nextStatus, reason });
       return result;
     });
-    return NextResponse.json({ order: updated });
+    if (body.nextStatus !== "out_for_delivery") return NextResponse.json({ order: updated });
+    const dispatchedItems = await db.select({ name: orderItems.name, quantity: orderItems.quantity }).from(orderItems).where(eq(orderItems.orderId, updated.id));
+    const dispatch = await dispatchCourierAssignment(request, { ...updated, items: dispatchedItems });
+    return NextResponse.json({ order: updated, dispatch });
   } catch (error) { return fail(error, request); }
 }

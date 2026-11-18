@@ -9,7 +9,7 @@ export async function POST(request: NextRequest) {
   try {
     sameOrigin(request);
     await rateLimit(request, "settlement-sync", 12);
-    const { business } = await requireBusiness();
+    const { business } = await requireBusiness("integration.write");
     try {
       const result = await syncMarketplaceSettlements(business.id, { force: true });
       await recordAudit({ request, event: "settlement.sync", outcome: "success", businessId: business.id, detail: { source: "manual", received: result.received, applied: result.applied } });

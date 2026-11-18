@@ -1,14 +1,14 @@
 "use client";
 import { useState, type FormEvent, type ReactNode } from "react";
 import { ArrowLeft, ArrowRight, CheckCircle2, ChefHat, Store, X } from "lucide-react";
-import type { AuthResponse, AuthUser, Business, BusinessType, MenuItem, Order } from "@/lib/types";
+import type { AuthResponse, AuthUser, Business, BusinessType, MenuItem, Offer, OfferInput, Order } from "@/lib/types";
 import { money } from "@/lib/types";
 import type { OrderAction } from "@/components/order-card";
 
 /** Only a server-marked 401 means the session expired; an upstream 401 (e.g. revoked Marketplace token) must not sign the user out. */
 export const AUTH_EXPIRED_EVENT = "savour-auth-expired";
 export class Api401Error extends Error {
-  constructor(message: string, public readonly sessionExpired: boolean) { super(message); }
+  constructor(message: string, public readonly sessionExpired: boolean, public readonly code?: string) { super(message); }
 }
 
 export async function api<T>(path: string, options?: RequestInit): Promise<T> {
@@ -17,7 +17,7 @@ export async function api<T>(path: string, options?: RequestInit): Promise<T> {
   if (response.status === 401 && !path.startsWith("/api/auth")) {
     const sessionExpired = response.headers.get("x-savour-auth-required") === "1";
     if (sessionExpired && typeof window !== "undefined") window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
-    throw new Api401Error(data.error || "Please sign in to continue.", sessionExpired);
+    throw new Api401Error(data.error || "Please sign in to continue.", sessionExpired, typeof data.code === "string" ? data.code : undefined);
   }
   if (!response.ok) throw new Error(data.error || "Something went wrong. Please try again.");
   return data as T;
@@ -89,6 +89,49 @@ export function MenuModal({ item, vendor, onClose, onSave }: { item: MenuItem | 
   const [name, setName] = useState(item?.name || ""), [price, setPrice] = useState(item ? String(item.price / 100) : ""), [description, setDescription] = useState(item?.description || ""), [category, setCategory] = useState(item?.category || ""), [imageUrl, setImageUrl] = useState(item?.imageUrl || ""), [dietary, setDietary] = useState(item?.dietary || "unspecified"), [error, setError] = useState(""), [busy, setBusy] = useState(false);
   async function submit(event: FormEvent) { event.preventDefault(); setBusy(true); setError(""); try { const amount = Math.round(Number(price) * 100); if (!Number.isFinite(amount) || amount < 100) throw new Error("Enter a valid price of at least ₹1."); await onSave({ name, description, price: amount, category: category || "Other", imageUrl, dietary }, item?.id); onClose(); } catch (err) { setError(err instanceof Error ? err.message : "Please try again."); } finally { setBusy(false); } }
   return <Modal title={item ? "Edit menu item" : "Add a menu item"} subtitle={vendor ? "Give your item a name and price. That’s it." : "Add the details customers need to know."} onClose={onClose}><form className="form-stack" onSubmit={submit}><label>Item name<input required maxLength={120} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Masala chai" /></label><label>Price (₹)<input required type="number" min="1" max="100000" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="0.00" /></label>{!vendor && <><label>Category<input value={category} maxLength={80} onChange={(e) => setCategory(e.target.value)} placeholder="e.g. Mains" /></label><label>Description <span>(optional)</span><textarea rows={2} value={description} maxLength={500} onChange={(e) => setDescription(e.target.value)} placeholder="What makes this dish special?" /></label><label>Dietary type<select value={dietary} onChange={(e) => setDietary(e.target.value)}><option value="unspecified">Not specified</option><option value="veg">Vegetarian</option><option value="nonveg">Non-vegetarian</option></select></label><label>Image URL <span>(optional, HTTPS)</span><input type="url" value={imageUrl} onChange={(e) => setImageUrl(e.target.value)} placeholder="https://..." /></label></>}{error && <p className="form-error">{error}</p>}<button className="btn btn-primary full large" disabled={busy}>{busy ? "Saving…" : "Save item"}</button></form></Modal>;
+}
+function localDateTime(value: string | null) {
+  if (!value) return "";
+  const date = new Date(value), pad = (part: number) => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+export function OfferModal({ offer, onClose, onSave }: { offer: Offer | null; onClose: () => void; onSave: (input: OfferInput, id?: string) => Promise<void> }) {
+  const [code, setCode] = useState(offer?.code || ""), [title, setTitle] = useState(offer?.title || ""), [description, setDescription] = useState(offer?.description || "");
+  const [discountType, setDiscountType] = useState<"percent" | "flat">(offer?.discountType || "percent"), [value, setValue] = useState(offer ? String(offer.value) : "");
+  const [minOrder, setMinOrder] = useState(offer ? String(offer.minOrder / 100) : ""), [maxDiscount, setMaxDiscount] = useState(offer?.maxDiscount ? String(offer.maxDiscount / 100) : "");
+  const [usageLimit, setUsageLimit] = useState(offer?.usageLimit ? String(offer.usageLimit) : ""), [startsAt, setStartsAt] = useState(localDateTime(offer?.startsAt || null)), [endsAt, setEndsAt] = useState(localDateTime(offer?.endsAt || null));
+  const [error, setError] = useState(""), [busy, setBusy] = useState(false);
+  async function submit(event: FormEvent) {
+    event.preventDefault(); setBusy(true); setError("");
+    try {
+      await onSave({
+        code, title, description, discountType, value: Number(value),
+        minOrder: minOrder ? Math.round(Number(minOrder) * 100) : 0,
+        maxDiscount: discountType === "percent" && maxDiscount ? Math.round(Number(maxDiscount) * 100) : null,
+        startsAt: startsAt ? new Date(startsAt).toISOString() : null,
+        endsAt: endsAt ? new Date(endsAt).toISOString() : null,
+        usageLimit: usageLimit ? Number(usageLimit) : null,
+        active: offer?.active ?? true,
+      }, offer?.id);
+      onClose();
+    } catch (err) { setError(err instanceof Error ? err.message : "Please try again."); }
+    finally { setBusy(false); }
+  }
+  return <Modal title={offer ? "Edit offer" : "Create an offer"} subtitle="Customers enter the code at checkout. You choose the saving." onClose={onClose}>
+    <form className="form-stack" onSubmit={submit}>
+      <label>Offer code<input required maxLength={40} value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} placeholder="e.g. WELCOME20" /></label>
+      <label>Offer title<input required maxLength={80} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. 20% off your first order" /></label>
+      <label>Description <span>(optional)</span><textarea rows={2} maxLength={300} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Tell customers when to use it" /></label>
+      <label>Discount type<select value={discountType} onChange={(e) => setDiscountType(e.target.value as "percent" | "flat")}><option value="percent">Percentage off</option><option value="flat">Flat amount off</option></select></label>
+      <label>{discountType === "percent" ? "Discount (%)" : "Discount (₹)"}<input required type="number" min={discountType === "percent" ? 1 : 1} max={discountType === "percent" ? 100 : 100000} step={discountType === "percent" ? 1 : 0.01} value={value} onChange={(e) => setValue(e.target.value)} placeholder={discountType === "percent" ? "20" : "100"} /></label>
+      <label>Minimum order (₹) <span>(optional)</span><input type="number" min="0" max="100000" step="0.01" value={minOrder} onChange={(e) => setMinOrder(e.target.value)} placeholder="No minimum" /></label>
+      {discountType === "percent" && <label>Maximum discount (₹) <span>(optional)</span><input type="number" min="1" max="100000" step="0.01" value={maxDiscount} onChange={(e) => setMaxDiscount(e.target.value)} placeholder="No cap" /></label>}
+      <label>Usage limit <span>(optional)</span><input type="number" min="1" max="1000000" step="1" value={usageLimit} onChange={(e) => setUsageLimit(e.target.value)} placeholder="Unlimited" /></label>
+      <div className="form-row"><label>Starts <span>(optional)</span><input type="datetime-local" value={startsAt} onChange={(e) => setStartsAt(e.target.value)} /></label><label>Ends <span>(optional)</span><input type="datetime-local" value={endsAt} onChange={(e) => setEndsAt(e.target.value)} /></label></div>
+      {error && <p className="form-error">{error}</p>}
+      <button className="btn btn-primary full large" disabled={busy}>{busy ? "Saving…" : offer ? "Save changes" : "Create offer"}</button>
+    </form>
+  </Modal>;
 }
 export function FulfilmentModal({ order, fulfilment, onClose, onConfirm }: { order: Order; fulfilment: "pickup" | "delivery"; onClose: () => void; onConfirm: (addressText?: string) => Promise<void> }) {
   const [address, setAddress] = useState(order.deliveryAddress || ""), [busy, setBusy] = useState(false), [error, setError] = useState("");

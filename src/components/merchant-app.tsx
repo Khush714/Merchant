@@ -1,21 +1,32 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { ArrowDownRight, ArrowRight, ArrowUpRight, Bell, BellRing, Bike, BookOpen, Check, CheckCircle2, ChefHat, ChevronDown, ChevronLeft, ChevronRight, CircleDollarSign, Clock3, CreditCard, ExternalLink, Headphones, HelpCircle, Home, Info, KeyRound, LayoutGrid, LogOut, Mail, Menu as MenuIcon, MoreHorizontal, PackageCheck, Plus, Search, Settings2, ShoppingBag, Sparkles, Store, Trash2, UtensilsCrossed, WifiOff, X } from "lucide-react";
-import { AccountModal, Api401Error, AUTH_EXPIRED_EVENT, api, DecisionModal, FulfilmentModal, MenuModal, Modal, PasswordModal, SetupModal, type MenuInput } from "@/components/dialogs";
+import { ArrowDownRight, ArrowRight, ArrowUpRight, BadgePercent, Bell, BellRing, Bike, BookOpen, Check, CheckCircle2, ChefHat, ChevronDown, ChevronLeft, ChevronRight, CircleDollarSign, Clock3, CreditCard, ExternalLink, Headphones, HelpCircle, Home, Info, KeyRound, LayoutGrid, Link2, LogOut, Mail, Menu as MenuIcon, MoreHorizontal, PackageCheck, Plus, Search, Settings2, ShieldCheck, ShoppingBag, Sparkles, Star, Store, Trash2, Users, UtensilsCrossed, WifiOff, X } from "lucide-react";
+import { AccountModal, Api401Error, AUTH_EXPIRED_EVENT, api, DecisionModal, FulfilmentModal, MenuModal, Modal, OfferModal, PasswordModal, SetupModal, type MenuInput } from "@/components/dialogs";
 import { BusinessSettings } from "@/components/business-settings";
 import { OrderCard, statusLabel, timeAgo, type OrderAction } from "@/components/order-card";
-import { demoBusiness, demoMenu, demoOverview, makeDemoOrders } from "@/lib/demo";
-import { money, type AuthResponse, type AuthUser, type Business, type MenuItem, type Order, type OrderStatus, type Overview } from "@/lib/types";
+import { demoBusiness, demoMenu, demoOverview, makeDemoOffers, makeDemoOrders } from "@/lib/demo";
+import { MARKETPLACE_LINK_INVALID } from "@/lib/marketplace-link-status";
+import { discountLabel, isOfferLive } from "@/lib/offers";
+import { can, ROLE_DESCRIPTIONS, ROLE_LABELS, STAFF_ROLES, type AppRole, type Permission, type StaffRole } from "@/lib/roles";
+import { money, type AuthResponse, type AuthUser, type Business, type MenuItem, type Offer, type OfferInput, type Order, type OrderStatus, type Overview, type StaffMember } from "@/lib/types";
 
-type Page = "home" | "orders" | "menu" | "earnings" | "more";
+type Page = "home" | "orders" | "menu" | "offers" | "staff" | "earnings" | "more";
 type User = AuthUser;
 type AuthData = AuthResponse;
-type Filter = "active" | "all" | "new" | "accepted" | "preparing" | "ready" | "out_for_delivery" | "completed" | "cancelled";
-const emptyOverview: Overview = { counts: { new: 0, accepted: 0, preparing: 0, ready: 0, out_for_delivery: 0, completed: 0, cancelled: 0, rejected: 0 }, todaySales: 0, todayOrders: 0, completedToday: 0, settlements: [], settlementSync: { linked: false, status: "idle", lastSyncedAt: null } };
-const navItems: { id: Page; label: string; icon: typeof Home }[] = [{ id: "home", label: "Home", icon: Home }, { id: "orders", label: "Orders", icon: ShoppingBag }, { id: "menu", label: "Menu", icon: BookOpen }, { id: "earnings", label: "Earnings", icon: CircleDollarSign }, { id: "more", label: "More", icon: LayoutGrid }];
-const filters: { id: Filter; label: string }[] = [{ id: "active", label: "Active" }, { id: "new", label: "New" }, { id: "accepted", label: "Accepted" }, { id: "preparing", label: "Preparing" }, { id: "ready", label: "Ready" }, { id: "out_for_delivery", label: "Out for delivery" }, { id: "completed", label: "Completed" }, { id: "cancelled", label: "Cancelled" }, { id: "all", label: "All" }];
+type Filter = "active" | "all" | "new" | "accepted" | "preparing" | "ready" | "out_for_delivery" | "completed" | "cancelled" | "feedback";
+const emptyOverview: Overview = { counts: { new: 0, accepted: 0, preparing: 0, ready: 0, out_for_delivery: 0, completed: 0, cancelled: 0, rejected: 0 }, todaySales: 0, todayOrders: 0, completedToday: 0, settlements: [], settlementSync: { linked: false, status: "idle", lastSyncedAt: null }, feedback: { available: true, windowDays: 30, averageRating: null, reviewCount: 0, badOrders: 0, pendingReplies: 0 } };
+const navItems: { id: Page; label: string; icon: typeof Home; permission?: Permission }[] = [
+  { id: "home", label: "Home", icon: Home },
+  { id: "orders", label: "Orders", icon: ShoppingBag, permission: "orders.read" },
+  { id: "menu", label: "Menu", icon: BookOpen, permission: "menu.read" },
+  { id: "offers", label: "Offers", icon: BadgePercent, permission: "offers.read" },
+  { id: "staff", label: "Staff", icon: Users, permission: "staff.write" },
+  { id: "earnings", label: "Earnings", icon: CircleDollarSign, permission: "overview.read" },
+  { id: "more", label: "More", icon: LayoutGrid },
+];
+const filters: { id: Filter; label: string }[] = [{ id: "active", label: "Active" }, { id: "new", label: "New" }, { id: "accepted", label: "Accepted" }, { id: "preparing", label: "Preparing" }, { id: "ready", label: "Ready" }, { id: "out_for_delivery", label: "Out for delivery" }, { id: "completed", label: "Completed" }, { id: "feedback", label: "Feedback" }, { id: "cancelled", label: "Cancelled" }, { id: "all", label: "All" }];
 function initials(name: string) { return name.split(" ").filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "S"; }
 function isInHours(business: Business) { if (!business.hoursEnabled) return true; const current = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date()); return business.opensAt <= business.closesAt ? current >= business.opensAt && current < business.closesAt : current >= business.opensAt || current < business.closesAt; }
 function playAlert() { try { const audio = new AudioContext(); const oscillator = audio.createOscillator(); const gain = audio.createGain(); oscillator.type = "sine"; oscillator.frequency.value = 740; gain.gain.setValueAtTime(0.08, audio.currentTime); gain.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + 0.35); oscillator.connect(gain); gain.connect(audio.destination); oscillator.start(); oscillator.stop(audio.currentTime + 0.35); oscillator.onended = () => { void audio.close(); }; } catch { /* Browser sound policies may block playback. */ } }
@@ -31,28 +42,39 @@ function subscribeToNetwork(callback: () => void) {
 function getNetworkStatus() { return navigator.onLine; }
 
 export default function MerchantApp() {
-  const [demo, setDemo] = useState(true), [user, setUser] = useState<User | null>(null), [verificationRequired, setVerificationRequired] = useState(false), [business, setBusiness] = useState<Business | null>(demoBusiness);
-  const [orders, setOrders] = useState<Order[]>(() => makeDemoOrders()), [items, setItems] = useState<MenuItem[]>(demoMenu), [overview, setOverview] = useState<Overview>(emptyOverview);
+  const [demo, setDemo] = useState(true), [user, setUser] = useState<User | null>(null), [verificationRequired, setVerificationRequired] = useState(false), [business, setBusiness] = useState<Business | null>(demoBusiness), [role, setRole] = useState<AppRole>("owner");
+  const [orders, setOrders] = useState<Order[]>(() => makeDemoOrders()), [items, setItems] = useState<MenuItem[]>(demoMenu), [overview, setOverview] = useState<Overview>(emptyOverview), [offers, setOffers] = useState<Offer[]>(() => makeDemoOffers(makeDemoOrders()));
   const [page, setPage] = useState<Page>("home"), [orderFilter, setOrderFilter] = useState<Filter>("active"), [homeFilter, setHomeFilter] = useState<"all" | "new" | "preparing" | "ready" | "out_for_delivery">("all");
   const [search, setSearch] = useState(""), [debouncedSearch, setDebouncedSearch] = useState(""), [from, setFrom] = useState(""), [to, setTo] = useState(""), [orderPage, setOrderPage] = useState(1), [hasMore, setHasMore] = useState(false);
-  const [accountOpen, setAccountOpen] = useState(false), [profileOpen, setProfileOpen] = useState(false), [passwordOpen, setPasswordOpen] = useState(false), [setupOpen, setSetupOpen] = useState(false), [menuDialog, setMenuDialog] = useState<{ item: MenuItem | null } | null>(null), [decision, setDecision] = useState<{ order: Order; action: OrderAction } | null>(null), [fulfilmentDialog, setFulfilmentDialog] = useState<{ order: Order; fulfilment: "pickup" | "delivery" } | null>(null), [fulfilmentBusy, setFulfilmentBusy] = useState(""), [details, setDetails] = useState<Order | null>(null), [notificationsOpen, setNotificationsOpen] = useState(false), [helpOpen, setHelpOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false), [profileOpen, setProfileOpen] = useState(false), [passwordOpen, setPasswordOpen] = useState(false), [setupOpen, setSetupOpen] = useState(false), [menuDialog, setMenuDialog] = useState<{ item: MenuItem | null } | null>(null), [decision, setDecision] = useState<{ order: Order; action: OrderAction } | null>(null), [fulfilmentDialog, setFulfilmentDialog] = useState<{ order: Order; fulfilment: "pickup" | "delivery" } | null>(null), [fulfilmentBusy, setFulfilmentBusy] = useState(""), [details, setDetails] = useState<Order | null>(null), [notificationsOpen, setNotificationsOpen] = useState(false), [helpOpen, setHelpOpen] = useState(false), [offerDialog, setOfferDialog] = useState<{ offer: Offer | null } | null>(null), [offerFilter, setOfferFilter] = useState<"active" | "archived">("active"), [offerBusy, setOfferBusy] = useState(""), [offersError, setOffersError] = useState(""), [staff, setStaff] = useState<StaffMember[]>([]), [staffEmail, setStaffEmail] = useState(""), [staffRole, setStaffRole] = useState<StaffRole>("server"), [staffBusy, setStaffBusy] = useState(""), [staffError, setStaffError] = useState("");
   const online = useSyncExternalStore(subscribeToNetwork, getNetworkStatus, () => true);
-  const [syncError, setSyncError] = useState(""), [toast, setToast] = useState(""), [busyStore, setBusyStore] = useState(false), [busyItem, setBusyItem] = useState(""), [refreshKey, setRefreshKey] = useState(0), [soundEnabled, setSoundEnabled] = useState(() => typeof window !== "undefined" && localStorage.getItem("savour-sound") === "on"), [notificationPermission, setNotificationPermission] = useState(() => typeof Notification !== "undefined" ? Notification.permission : "default"), [menuError, setMenuError] = useState(""), [resendingVerification, setResendingVerification] = useState(false), [settlementBusy, setSettlementBusy] = useState(false);
+  const [syncError, setSyncError] = useState(""), [toast, setToast] = useState(""), [busyStore, setBusyStore] = useState(false), [busyItem, setBusyItem] = useState(""), [refreshKey, setRefreshKey] = useState(0), [soundEnabled, setSoundEnabled] = useState(() => typeof window !== "undefined" && localStorage.getItem("savour-sound") === "on"), [notificationPermission, setNotificationPermission] = useState(() => typeof Notification !== "undefined" ? Notification.permission : "default"), [menuError, setMenuError] = useState(""), [resendingVerification, setResendingVerification] = useState(false), [settlementBusy, setSettlementBusy] = useState(false), [feedbackBusy, setFeedbackBusy] = useState(""), [linkInvalid, setLinkInvalid] = useState(false);
   const lastNewCount = useRef<number | null>(null), lastNewId = useRef<string | null>(null), actionBusyRef = useRef<Set<string>>(new Set());
   const [actionBusy, setActionBusy] = useState<Record<string, boolean>>({});
 
   const activate = useCallback((data: AuthData) => {
     if (!data.user) return;
-    setDemo(false); setUser(data.user); setVerificationRequired(data.verificationRequired); setBusiness(data.business); setOrders([]); setItems([]); setOverview(emptyOverview); setPage("home"); setAccountOpen(false); lastNewCount.current = null; lastNewId.current = null;
+    setDemo(false); setUser(data.user); setVerificationRequired(data.verificationRequired); setBusiness(data.business); setRole(data.role ?? "owner"); setOrders([]); setItems([]); setOverview(emptyOverview); setOffers([]); setOffersError(""); setStaff([]); setStaffError(""); setOfferFilter("active"); setPage("home"); setAccountOpen(false); setLinkInvalid(false); lastNewCount.current = null; lastNewId.current = null;
     if (!data.business || data.business.approvalStatus === "draft") setSetupOpen(true);
   }, []);
+  // Proactively check the pairing token so a dead link is obvious before any sync call fails.
+  const checkLink = useCallback(async () => {
+    if (demo || !business?.id) return;
+    try {
+      const status = await api<{ linked: boolean; valid: boolean | null }>("/api/merchant/marketplace-link");
+      setLinkInvalid(Boolean(status.linked && status.valid === false));
+    } catch { /* Best effort: live requests still surface a genuine failure. */ }
+  }, [demo, business?.id]);
+  // Check on mount; the setState in checkLink only resolves after the request settles.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { void checkLink(); }, [checkLink]);
   useEffect(() => { let active = true; api<AuthData>("/api/auth").then((data) => { if (active && data.user) activate(data); }).catch(() => { if (active) setSyncError("Couldn’t reach the server. Try again when you’re online."); }); return () => { active = false; }; }, [activate]);
   useEffect(() => {
     const reset = () => {
-      setDemo(true); setUser(null); setVerificationRequired(false); setBusiness(demoBusiness);
-      setOrders(makeDemoOrders()); setItems(demoMenu); setOverview(emptyOverview);
-      setPage("home"); setAccountOpen(false); setProfileOpen(false); setSetupOpen(false);
-      setSyncError(""); setMenuError(""); setToast("Your session expired. Please sign in again.");
+      setDemo(true); setUser(null); setVerificationRequired(false); setBusiness(demoBusiness); setRole("owner");
+      setOrders(makeDemoOrders()); setItems(demoMenu); setOverview(emptyOverview); setOffers(makeDemoOffers(makeDemoOrders()));
+      setPage("home"); setAccountOpen(false); setProfileOpen(false); setSetupOpen(false); setOfferFilter("active");
+      setSyncError(""); setMenuError(""); setOffersError(""); setLinkInvalid(false); setToast("Your session expired. Please sign in again.");
     };
     window.addEventListener(AUTH_EXPIRED_EVENT, reset);
     return () => window.removeEventListener(AUTH_EXPIRED_EVENT, reset);
@@ -60,18 +82,24 @@ export default function MerchantApp() {
   useEffect(() => { const timeout = window.setTimeout(() => { setDebouncedSearch(search); setOrderPage(1); }, 350); return () => window.clearTimeout(timeout); }, [search]);
   useEffect(() => { if (!toast) return; const timeout = window.setTimeout(() => setToast(""), 4200); return () => window.clearTimeout(timeout); }, [toast]);
   useEffect(() => {
-    if (demo || !business?.id) return;
+    if (demo || !business?.id || linkInvalid) return;
     let active = true;
     api<{ items: MenuItem[] }>("/api/merchant/menu").then((data) => { if (active) { setItems(data.items); setMenuError(""); } }).catch((error) => { if (active && !(error instanceof Api401Error && error.sessionExpired)) setMenuError(error.message); });
     return () => { active = false; };
-  }, [demo, business?.id, refreshKey]);
-  useEffect(() => {
-    const refreshAfterLinkChange = () => setRefreshKey((n) => n + 1);
-    window.addEventListener("savour-marketplace-link-changed", refreshAfterLinkChange);
-    return () => window.removeEventListener("savour-marketplace-link-changed", refreshAfterLinkChange);
-  }, []);
+  }, [demo, business?.id, refreshKey, linkInvalid]);
   useEffect(() => {
     if (demo || !business?.id) return;
+    let active = true;
+    api<{ offers: Offer[] }>("/api/merchant/offers").then((data) => { if (active) { setOffers(data.offers); setOffersError(""); } }).catch((error) => { if (active && !(error instanceof Api401Error && error.sessionExpired)) setOffersError(error.message); });
+    return () => { active = false; };
+  }, [demo, business?.id, refreshKey]);
+  useEffect(() => {
+    const refreshAfterLinkChange = () => { setRefreshKey((n) => n + 1); void checkLink(); };
+    window.addEventListener("savour-marketplace-link-changed", refreshAfterLinkChange);
+    return () => window.removeEventListener("savour-marketplace-link-changed", refreshAfterLinkChange);
+  }, [checkLink]);
+  useEffect(() => {
+    if (demo || !business?.id || linkInvalid) return;
     let stopped = false, failures = 0, timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       if (!navigator.onLine || document.hidden) { timer = setTimeout(poll, 30000); return; }
@@ -90,14 +118,18 @@ export default function MerchantApp() {
         }
         lastNewCount.current = newCount; lastNewId.current = overviewData.overview.latestNewOrderId || null; setBusiness((current) => current && current.id === overviewData.business.id && (!current.updatedAt || (overviewData.business.updatedAt && new Date(overviewData.business.updatedAt).getTime() >= new Date(current.updatedAt).getTime())) ? overviewData.business : current); setOverview(overviewData.overview); setOrders(orderData.orders); setHasMore(orderData.hasMore); setSyncError(""); failures = 0;
       } catch (error) {
-        if (error instanceof Api401Error) { if (!stopped && !error.sessionExpired) setSyncError(error.message); return; }
+        if (error instanceof Api401Error) {
+          if (error.code === MARKETPLACE_LINK_INVALID) setLinkInvalid(true);
+          if (!stopped && !error.sessionExpired) setSyncError(error.message);
+          return;
+        }
         if (!stopped) { failures++; setSyncError("Couldn’t sync the latest data. We’ll retry automatically."); }
       }
       if (!stopped) timer = setTimeout(poll, Math.min(30000 * 2 ** failures, 120000));
     };
     void poll();
     return () => { stopped = true; clearTimeout(timer); };
-  }, [demo, business?.id, page, orderFilter, orderPage, debouncedSearch, from, to, refreshKey, soundEnabled, online]);
+  }, [demo, business?.id, page, orderFilter, orderPage, debouncedSearch, from, to, refreshKey, soundEnabled, online, linkInvalid]);
 
   const vendor = business?.type === "vendor";
   const stats = demo ? demoOverview(orders) : overview;
@@ -109,7 +141,13 @@ export default function MerchantApp() {
     refunds: totals.refunds + settlement.refundAmount,
     adjustments: totals.adjustments + settlement.adjustmentAmount,
   }), { net: 0, gross: 0, fees: 0, refunds: 0, adjustments: 0 }), [paidSettlements]);
-  const visibleNav = vendor ? navItems.filter((item) => item.id !== "more") : navItems;
+  const visibleNav = navItems.filter((item) => (!vendor || item.id !== "more") && (!item.permission || can(role, item.permission)));
+  useEffect(() => {
+    if (demo || !business?.id || !can(role, "staff.write")) return;
+    let active = true;
+    api<{ staff: StaffMember[] }>("/api/merchant/staff").then((data) => { if (active) { setStaff(data.staff); setStaffError(""); } }).catch((error) => { if (active && !(error instanceof Api401Error && error.sessionExpired)) setStaffError(error.message); });
+    return () => { active = false; };
+  }, [demo, business?.id, role, refreshKey]);
   const activeCount = stats.counts.new + stats.counts.accepted + stats.counts.preparing + stats.counts.ready + stats.counts.out_for_delivery;
   const accepting = !!business && business.approvalStatus === "approved" && business.isOpen && (demo || isInHours(business));
   const filteredOrders = useMemo(() => {
@@ -122,6 +160,7 @@ export default function MerchantApp() {
       if (from) result = result.filter((o) => o.createdAt.slice(0, 10) >= from);
       if (to) result = result.filter((o) => o.createdAt.slice(0, 10) <= to);
     }
+    if (page === "orders" && orderFilter === "feedback") result = result.filter((o) => !!o.feedbackAt);
     if (page === "home") { result = result.filter((o) => ["new", "accepted", "preparing", "ready", "out_for_delivery"].includes(o.status)); if (homeFilter === "preparing") result = result.filter((o) => ["accepted", "preparing"].includes(o.status)); else if (homeFilter !== "all") result = result.filter((o) => o.status === homeFilter); }
     return result;
   }, [orders, demo, page, orderFilter, homeFilter, debouncedSearch, from, to]);
@@ -249,6 +288,94 @@ export default function MerchantApp() {
       setRefreshKey((n) => n + 1);
     } finally { setSettlementBusy(false); }
   }
+  async function submitFeedbackReply(order: Order, response: string) {
+    if (!response.trim() || feedbackBusy === order.id) return;
+    const repliedAt = new Date().toISOString();
+    if (demo) {
+      setOrders((current) => current.map((o) => o.id === order.id ? { ...o, merchantResponse: response.trim(), merchantRespondedAt: repliedAt } : o));
+      setDetails((current) => current && current.id === order.id ? { ...current, merchantResponse: response.trim(), merchantRespondedAt: repliedAt } : current);
+      setToast("Your reply was added.");
+      return;
+    }
+    setFeedbackBusy(order.id);
+    try {
+      const data = await api<{ feedback: { merchantResponse: string; merchantRespondedAt: string | null } | null; proxied: boolean }>("/api/merchant/feedback", { method: "PATCH", body: JSON.stringify({ id: order.id, orderCode: order.id, response }) });
+      const reply = data.feedback?.merchantResponse ?? response.trim();
+      const at = data.feedback?.merchantRespondedAt ?? repliedAt;
+      setOrders((current) => current.map((o) => o.id === order.id ? { ...o, merchantResponse: reply, merchantRespondedAt: at } : o));
+      setDetails((current) => current && current.id === order.id ? { ...current, merchantResponse: reply, merchantRespondedAt: at } : current);
+      setToast(data.proxied ? "Reply sent to Marketplace." : "Your reply was added.");
+      if (data.proxied) setRefreshKey((n) => n + 1);
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "Could not send your reply.");
+    } finally { setFeedbackBusy(""); }
+  }
+  async function saveOffer(input: OfferInput, id?: string) {
+    if (demo) {
+      const stamp = new Date().toISOString();
+      setOffers((current) => id
+        ? current.map((offer) => offer.id === id ? { ...offer, ...input, updatedAt: stamp } : offer)
+        : [{ id: `demo-offer-${Date.now()}`, businessId: demoBusiness.id, ...input, archived: false, createdAt: stamp, updatedAt: stamp, redemptions: 0, discountGiven: 0, influencedGross: 0 }, ...current]);
+      setToast(id ? "Offer updated." : "Offer created.");
+      return;
+    }
+    const data = await api<{ offer: Offer }>("/api/merchant/offers", { method: id ? "PATCH" : "POST", body: JSON.stringify({ ...input, ...(id ? { id } : {}) }) });
+    setOffers((current) => id ? current.map((offer) => offer.id === id ? data.offer : offer) : [data.offer, ...current]);
+    setOffersError(""); setToast(id ? "Offer updated." : "Offer created.");
+  }
+  async function toggleOffer(offer: Offer) {
+    if (offerBusy === offer.id) return;
+    const next = !offer.active;
+    if (demo) { setOffers((current) => current.map((row) => row.id === offer.id ? { ...row, active: next } : row)); setToast(next ? `${offer.code} is live.` : `${offer.code} is paused.`); return; }
+    setOfferBusy(offer.id);
+    try {
+      const data = await api<{ offer: Offer }>("/api/merchant/offers", { method: "PATCH", body: JSON.stringify({ id: offer.id, action: "toggle" }) });
+      setOffers((current) => current.map((row) => row.id === offer.id ? data.offer : row)); setOffersError(""); setToast(next ? `${offer.code} is live.` : `${offer.code} is paused.`);
+    } catch (error) { setToast(error instanceof Error ? error.message : "Could not update the offer."); }
+    finally { setOfferBusy(""); }
+  }
+  async function archiveOffer(offer: Offer) {
+    if (!window.confirm(`Archive ${offer.code}? Customers will no longer see it at checkout.`)) return;
+    if (demo) { setOffers((current) => current.filter((row) => row.id !== offer.id)); setToast(`${offer.code} was archived.`); return; }
+    setOfferBusy(offer.id);
+    try {
+      await api("/api/merchant/offers", { method: "DELETE", body: JSON.stringify({ id: offer.id }) });
+      setOffers((current) => current.filter((row) => row.id !== offer.id)); setOffersError(""); setToast(`${offer.code} was archived.`);
+    } catch (error) { setToast(error instanceof Error ? error.message : "Could not archive the offer."); }
+    finally { setOfferBusy(""); }
+  }
+  async function addStaff(event: FormEvent) {
+    event.preventDefault();
+    const email = staffEmail.trim().toLowerCase();
+    if (!email) return;
+    setStaffBusy("new"); setStaffError("");
+    try {
+      const data = await api<{ staff: StaffMember }>("/api/merchant/staff", { method: "POST", body: JSON.stringify({ email, role: staffRole }) });
+      setStaff((current) => [data.staff, ...current.filter((member) => member.userId !== data.staff.userId)]);
+      setStaffEmail(""); setToast(`${email} can now access this outlet as ${ROLE_LABELS[staffRole].toLowerCase()}.`);
+    } catch (error) { setStaffError(error instanceof Error ? error.message : "Could not add this person."); }
+    finally { setStaffBusy(""); }
+  }
+  async function changeStaffRole(member: StaffMember, next: StaffRole) {
+    if (next === member.role || staffBusy) return;
+    setStaffBusy(member.id); setStaffError("");
+    try {
+      const data = await api<{ staff: StaffMember }>("/api/merchant/staff", { method: "PATCH", body: JSON.stringify({ id: member.id, role: next }) });
+      setStaff((current) => current.map((row) => row.id === member.id ? data.staff : row));
+      setToast(`${member.email} is now ${ROLE_LABELS[next].toLowerCase()}.`);
+    } catch (error) { setStaffError(error instanceof Error ? error.message : "Could not change this role."); }
+    finally { setStaffBusy(""); }
+  }
+  async function removeStaff(member: StaffMember) {
+    if (!window.confirm(`Remove ${member.email} from this outlet?`)) return;
+    setStaffBusy(member.id); setStaffError("");
+    try {
+      await api("/api/merchant/staff", { method: "DELETE", body: JSON.stringify({ id: member.id }) });
+      setStaff((current) => current.filter((row) => row.id !== member.id));
+      setToast(`${member.email} no longer has access.`);
+    } catch (error) { setStaffError(error instanceof Error ? error.message : "Could not remove this person."); }
+    finally { setStaffBusy(""); }
+  }
   function switchDemoMode() { if (!business) return; const next = business.type === "restaurant" ? "vendor" : "restaurant"; setBusiness({ ...business, type: next }); if (page === "more") setPage("home"); setToast(`Exploring ${next === "vendor" ? "street vendor" : "restaurant"} mode with sample data.`); }
   function navigate(next: Page) { setPage(next); if (next === "orders") { setOrderPage(1); setOrderFilter("active"); } window.scrollTo({ top: 0, behavior: "smooth" }); }
   const storeSwitch = <button className={`switch ${business?.isOpen ? "on" : ""}`} role="switch" aria-checked={!!business?.isOpen} aria-label="Store open for orders" disabled={!business || busyStore} onClick={toggleStore}><span /></button>;
@@ -262,7 +389,8 @@ export default function MerchantApp() {
     <main className="main-area"><header className="topbar"><div className="breadcrumb"><span>Workspace</span><ChevronRight size={15} /><strong>{navItems.find((n) => n.id === page)?.label}</strong></div><div className="topbar-right"><div className="top-search"><Search size={17} /><input aria-label="Search order number" placeholder="Search orders..." value={search} onChange={(e) => { setSearch(e.target.value); setPage("orders"); setOrderFilter("all"); }} /></div><button className="top-notification" aria-label="Notification settings" onClick={() => setNotificationsOpen(true)}><Bell size={19} /><span /></button><div className="top-divider" /><button className="top-store" onClick={() => demo ? setAccountOpen(true) : setProfileOpen(true)}><div className="store-avatar small-avatar">{initials(name)}</div><div><strong>{name}</strong><span>{demo ? "Sample workspace" : user?.email}</span></div><ChevronDown size={15} /></button></div></header>
       <div className="mobile-topbar"><div className="mobile-brand"><span className="brand-mark"><UtensilsCrossed size={18} /></span><strong>savour<span>.</span></strong><small>PARTNER</small></div><div className="mobile-top-actions"><button className="icon-button" aria-label="Notifications" onClick={() => setNotificationsOpen(true)}><Bell size={20} /></button><button className="store-avatar small-avatar avatar-button" aria-label="Account" onClick={() => demo ? setAccountOpen(true) : setProfileOpen(true)}>{initials(name)}</button></div></div>
       {!online && <div className="connection-banner"><WifiOff size={16} /> You’re offline. New orders and changes won’t sync until you reconnect.</div>}
-      {online && syncError && <div className="connection-banner"><WifiOff size={16} /> {syncError} <button onClick={() => setRefreshKey((n) => n + 1)}>Retry</button></div>}
+      {online && !demo && linkInvalid && <div className="connection-banner reconnect-banner"><Link2 size={16} /><div><strong>Marketplace connection needs attention.</strong><span>Orders and menu won’t sync until you reconnect. Open Business settings → Marketplace connection and generate a fresh pairing code.</span></div><button onClick={() => navigate("more")}>Open settings</button></div>}
+      {online && syncError && !linkInvalid && <div className="connection-banner"><WifiOff size={16} /> {syncError} <button onClick={() => setRefreshKey((n) => n + 1)}>Retry</button></div>}
       {!demo && user && !user.emailVerified && <div className="verification-banner"><Mail size={16} /><div><strong>{verificationRequired ? "Verify your email to continue" : "Email verification is optional for now"}</strong><span>{verificationRequired ? `We sent a link to ${user.email}. Check your inbox and spam folder.` : "Your workspace is ready to use; you can confirm your address whenever delivery is available."}</span></div><button disabled={resendingVerification} onClick={() => void resendVerification()}>{resendingVerification ? "Sending…" : "Resend verification email"}</button></div>}
       {demo && <div className="demo-banner"><div><Sparkles size={15} /><strong>Explore your sample workspace</strong><span>Sample data · changes are temporary</span></div><div><button className="demo-mode-button" onClick={switchDemoMode}>Try {vendor ? "restaurant" : "street vendor"} mode</button><button className="demo-signup" onClick={() => setAccountOpen(true)}>Get started <ArrowRight size={14} /></button></div></div>}
       <div className="content-wrap">
@@ -271,19 +399,49 @@ export default function MerchantApp() {
           {(!business || business.approvalStatus === "draft") && !demo && <div className="setup-banner"><div><strong>Let’s get your business ready.</strong><span>Finish your details and add your first menu item to get started.</span></div><button className="btn btn-primary" onClick={() => setSetupOpen(true)}>Continue setup <ArrowRight size={15} /></button></div>}
           {business?.approvalStatus === "pending" && !demo && <div className="approval-banner"><Info size={18} /><div><strong>Your listing is pending review</strong><span>You can set up your menu while your business awaits approval. It isn’t visible to customers yet.</span></div></div>}
           {vendor && <div className="vendor-store-bar"><div><strong>Your store is {business?.isOpen ? "open" : "closed"}</strong><p>{accepting ? "You’re accepting new orders" : "Not accepting new orders right now"}</p></div>{storeSwitch}</div>}
-          <div className={`metrics-grid ${vendor ? "vendor-metrics" : ""}`}><Metric icon={<CircleDollarSign size={21} />} tone="red" title="Today’s sales" value={money(stats.todaySales)} detail="Gross value of completed orders" /><Metric icon={<ShoppingBag size={21} />} tone="blue" title="Total orders" value={String(stats.todayOrders).padStart(2, "0")} detail="Marketplace orders today" /><Metric icon={<BellRing size={21} />} tone="amber" title="New orders" value={String(stats.counts.new).padStart(2, "0")} detail="Waiting for your response" accent={stats.counts.new > 0} />{vendor && <Metric icon={<ChefHat size={21} />} tone="blue" title="Preparing" value={String(stats.counts.accepted + stats.counts.preparing).padStart(2, "0")} detail="Orders in the kitchen" />}<Metric icon={<PackageCheck size={21} />} tone="green" title="Ready for handoff" value={String(stats.counts.ready).padStart(2, "0")} detail="Ready for handoff" /></div>
+          <div className={`metrics-grid ${vendor ? "vendor-metrics" : ""}`}><Metric icon={<CircleDollarSign size={21} />} tone="red" title="Today’s sales" value={money(stats.todaySales)} detail="Gross value of completed orders" /><Metric icon={<ShoppingBag size={21} />} tone="blue" title="Total orders" value={String(stats.todayOrders).padStart(2, "0")} detail="Marketplace orders today" /><Metric icon={<BellRing size={21} />} tone="amber" title="New orders" value={String(stats.counts.new).padStart(2, "0")} detail="Waiting for your response" accent={stats.counts.new > 0} />{vendor && <Metric icon={<ChefHat size={21} />} tone="blue" title="Preparing" value={String(stats.counts.accepted + stats.counts.preparing).padStart(2, "0")} detail="Orders in the kitchen" />}<Metric icon={<PackageCheck size={21} />} tone="green" title="Ready for handoff" value={String(stats.counts.ready).padStart(2, "0")} detail="Ready for handoff" /><Metric icon={<Star size={21} />} tone="amber" title="Customer rating" value={stats.feedback.available && stats.feedback.averageRating !== null ? stats.feedback.averageRating.toFixed(1) : "—"} detail={stats.feedback.available ? `${stats.feedback.reviewCount} reviews · last ${stats.feedback.windowDays} days` : "Not published by Marketplace"} /></div>
           <div className={`dashboard-columns ${vendor ? "vendor-dashboard" : ""}`}><section className="live-section"><div className="section-header"><div><div className="title-line"><h2>Live orders</h2><span className="live-indicator"><span /> LIVE</span></div><p>Keep things moving, one order at a time.</p></div><button className="text-link" onClick={() => navigate("orders")}>View all orders <ArrowRight size={16} /></button></div>
             <div className="home-tabs">{([{ id: "all", label: "All active", count: activeCount }, { id: "new", label: "New", count: stats.counts.new }, { id: "preparing", label: "Preparing", count: stats.counts.accepted + stats.counts.preparing }, { id: "ready", label: "Ready", count: stats.counts.ready }, { id: "out_for_delivery", label: "Out", count: stats.counts.out_for_delivery }] as const).map((tab) => <button key={tab.id} onClick={() => setHomeFilter(tab.id)} className={homeFilter === tab.id ? "selected" : ""}>{tab.label} <span>{tab.count}</span></button>)}</div>
             {activeOrders.length ? <div className="order-grid">{activeOrders.map((order) => <OrderCard key={order.id} order={order} onAction={handleOrderAction} onDetails={setDetails} onFulfilmentChange={handleFulfilmentChange} fulfilmentSettings={{ pickup: business?.pickupEnabled ?? true, delivery: business?.deliveryEnabled ?? true }} fulfilmentBusy={fulfilmentBusy === order.id} busy={!!actionBusy[order.id]} />)}</div> : <Empty icon={<ShoppingBag size={25} />} title="All caught up" text="New and active orders will appear here as they come in." />}
           </section>{!vendor && <aside className="dashboard-aside"><div className="panel store-panel"><div className="store-panel-head"><div className="widget-icon"><Store size={19} /></div><span className={`online-badge ${accepting ? "" : "closed"}`}><span />{accepting ? "ONLINE" : "OFFLINE"}</span></div><div className="store-panel-title"><div><h3>Your store is {business?.isOpen ? "open" : "closed"}</h3><p>{accepting ? "You’re accepting new orders" : business?.isOpen && business.hoursEnabled ? "Outside your scheduled hours" : "Not accepting new orders"}</p></div>{storeSwitch}</div><div className="store-panel-line" /><div className="hours-row"><Clock3 size={16} /><div><span>Operating hours</span><strong>{business?.hoursEnabled ? `${business.opensAt} – ${business.closesAt}` : "No schedule set"}</strong></div></div><button className="widget-link" onClick={() => navigate("more")}>Manage store settings <ArrowRight size={15} /></button></div>
             <div className="panel snapshot-panel"><div className="widget-title"><h3>Today’s snapshot</h3><span>SO FAR</span></div><div className="snapshot-row"><span><span className="snapshot-icon blush"><ShoppingBag size={15} /></span> Orders received</span><strong>{stats.todayOrders}</strong></div><div className="snapshot-row"><span><span className="snapshot-icon gold"><ChefHat size={15} /></span> In the kitchen</span><strong>{stats.counts.accepted + stats.counts.preparing}</strong></div><div className="snapshot-row"><span><span className="snapshot-icon mint"><CheckCircle2 size={15} /></span> Completed today</span><strong>{stats.completedToday}</strong></div></div>
+            <div className="panel feedback-panel"><div className="widget-title"><h3>Customer feedback</h3><span>{stats.feedback.windowDays} DAYS</span></div>{stats.feedback.available ? <><div className="feedback-score"><Star size={22} fill="currentColor" /><strong>{stats.feedback.averageRating !== null ? stats.feedback.averageRating.toFixed(1) : "—"}</strong><span>average rating</span></div><div className="snapshot-row"><span>Bad orders (2★ or less)</span><strong>{stats.feedback.badOrders}</strong></div><div className="snapshot-row"><span>Awaiting your reply</span><strong>{stats.feedback.pendingReplies}</strong></div><button className="widget-link" onClick={() => { navigate("orders"); setOrderFilter("feedback"); }}>Read reviews <ArrowRight size={15} /></button></> : <p className="feedback-unavailable">Connected listings keep customer feedback in Marketplace. Publish feedback metrics there to see them here.</p>}</div>
             {!vendor && <div className="menu-promo"><span className="promo-label">A LITTLE TIP</span><h3>A great menu<br />goes a long way.</h3><p>Keep your items fresh and ready to order.</p><button onClick={() => navigate("menu")}>Manage menu <ArrowRight size={15} /></button></div>}
           </aside>}</div>
         </>}
         {page === "orders" && <><div className="page-intro"><div><div className="eyebrow">YOUR ORDER BOOK <span>✳</span></div><h1>Orders</h1><p>Everything you need to keep your orders moving.</p></div><button className="btn btn-outline" onClick={() => setRefreshKey((n) => n + 1)}>Refresh orders</button></div><section className="orders-page"><div className="filter-tabs">{filters.map((filter) => <button key={filter.id} className={orderFilter === filter.id ? "selected" : ""} onClick={() => { setOrderFilter(filter.id); setOrderPage(1); }}>{filter.label}{filter.id === "new" && stats.counts.new > 0 && <span>{stats.counts.new}</span>}</button>)}</div><div className="order-tools"><div className="search-field"><Search size={17} /><input placeholder="Search order number" aria-label="Search order number" value={search} onChange={(e) => { setSearch(e.target.value); setPage("orders"); setOrderFilter("all"); }} /></div><div className="date-filters"><label>From <input type="date" value={from} onChange={(e) => { setFrom(e.target.value); setOrderPage(1); }} /></label><label>To <input type="date" value={to} onChange={(e) => { setTo(e.target.value); setOrderPage(1); }} /></label></div></div>{filteredOrders.length ? <div className="order-grid orders-full-grid">{filteredOrders.map((order) => <OrderCard key={order.id} order={order} onAction={handleOrderAction} onDetails={setDetails} onFulfilmentChange={handleFulfilmentChange} fulfilmentSettings={{ pickup: business?.pickupEnabled ?? true, delivery: business?.deliveryEnabled ?? true }} fulfilmentBusy={fulfilmentBusy === order.id} busy={!!actionBusy[order.id]} />)}</div> : <Empty icon={<ShoppingBag size={25} />} title="No orders here yet" text="Orders matching this view will show up here." />}{!demo && <div className="pagination"><button className="btn btn-outline" disabled={orderPage <= 1} onClick={() => setOrderPage((n) => n - 1)}><ChevronLeft size={16} /> Previous</button><span>Page {orderPage}</span><button className="btn btn-outline" disabled={!hasMore} onClick={() => setOrderPage((n) => n + 1)}>Next <ChevronRight size={16} /></button></div>}</section></>}
-        {page === "menu" && <><div className="page-intro"><div><div className="eyebrow">MADE BY YOU <span>✳</span></div><h1>Your menu</h1><p>Good food starts here. Keep your menu up to date.</p></div><button className="btn btn-primary" onClick={() => setMenuDialog({ item: null })}><Plus size={17} /> Add item</button></div><div className="menu-summary"><span><BookOpen size={18} /> <strong>{items.length}</strong> menu items</span><span className="summary-divider" /><span><span className="green-dot" /> {items.filter((i) => i.available).length} available</span><span><span className="grey-dot" /> {items.filter((i) => !i.available).length} sold out</span></div>{menuError && <div className="approval-banner"><Info size={18} /> {menuError} <button onClick={() => { api<{ items: MenuItem[] }>("/api/merchant/menu").then((data) => { setItems(data.items); setMenuError(""); }).catch((error) => setMenuError(error.message)); }}>Retry</button></div>}{items.length ? <div className="panel menu-list"><div className="menu-list-head"><span>ITEM</span><span>CATEGORY</span><span>PRICE</span><span>AVAILABILITY</span><span /></div>{items.map((item) => <div className="menu-row" key={item.id}><div className="menu-item-info">{item.imageUrl ? <Image src={item.imageUrl} alt="" width={50} height={50} unoptimized className="menu-thumb" /> : <div className="menu-thumb menu-placeholder"><UtensilsCrossed size={20} /></div>}<div><strong>{item.name}</strong><span>{item.description || "A favourite from your kitchen"}</span></div></div><div className="menu-category">{item.category}</div><strong className="menu-price">{money(item.price)}</strong><div className="menu-availability"><button className={`switch small-switch ${item.available ? "on" : ""}`} role="switch" aria-checked={item.available} aria-label={`${item.name} availability`} disabled={busyItem === item.id} onClick={() => toggleItem(item)}><span /></button><span>{item.available ? "Available" : "Sold out"}</span></div><div className="menu-row-actions"><button className="icon-button small" aria-label={`Edit ${item.name}`} onClick={() => setMenuDialog({ item })}><Settings2 size={17} /></button><button className="icon-button small" aria-label={`Archive ${item.name}`} disabled={busyItem === item.id} onClick={() => deleteItem(item)}><Trash2 size={16} /></button></div></div>)}</div> : <Empty icon={<BookOpen size={25} />} title="Your menu starts here" text="Add your first item and price so customers know what’s cooking." action={<button className="btn btn-primary" onClick={() => setMenuDialog({ item: null })}><Plus size={16} /> Add your first item</button>} />}</>}
+        {page === "menu" && <><div className="page-intro"><div><div className="eyebrow">MADE BY YOU <span>✳</span></div><h1>Your menu</h1><p>Good food starts here. Keep your menu up to date.</p></div>{can(role, "menu.write") && <button className="btn btn-primary" onClick={() => setMenuDialog({ item: null })}><Plus size={17} /> Add item</button>}</div><div className="menu-summary"><span><BookOpen size={18} /> <strong>{items.length}</strong> menu items</span><span className="summary-divider" /><span><span className="green-dot" /> {items.filter((i) => i.available).length} available</span><span><span className="grey-dot" /> {items.filter((i) => !i.available).length} sold out</span></div>{menuError && <div className="approval-banner"><Info size={18} /> {menuError} <button onClick={() => { api<{ items: MenuItem[] }>("/api/merchant/menu").then((data) => { setItems(data.items); setMenuError(""); }).catch((error) => setMenuError(error.message)); }}>Retry</button></div>}{items.length ? <div className="panel menu-list"><div className="menu-list-head"><span>ITEM</span><span>CATEGORY</span><span>PRICE</span><span>AVAILABILITY</span><span /></div>{items.map((item) => <div className="menu-row" key={item.id}><div className="menu-item-info">{item.imageUrl ? <Image src={item.imageUrl} alt="" width={50} height={50} unoptimized className="menu-thumb" /> : <div className="menu-thumb menu-placeholder"><UtensilsCrossed size={20} /></div>}<div><strong>{item.name}</strong><span>{item.description || "A favourite from your kitchen"}</span></div></div><div className="menu-category">{item.category}</div><strong className="menu-price">{money(item.price)}</strong><div className="menu-availability"><button className={`switch small-switch ${item.available ? "on" : ""}`} role="switch" aria-checked={item.available} aria-label={`${item.name} availability`} disabled={busyItem === item.id} onClick={() => toggleItem(item)}><span /></button><span>{item.available ? "Available" : "Sold out"}</span></div><div className="menu-row-actions"><button className="icon-button small" aria-label={`Edit ${item.name}`} onClick={() => setMenuDialog({ item })}><Settings2 size={17} /></button><button className="icon-button small" aria-label={`Archive ${item.name}`} disabled={busyItem === item.id} onClick={() => deleteItem(item)}><Trash2 size={16} /></button></div></div>)}</div> : <Empty icon={<BookOpen size={25} />} title="Your menu starts here" text="Add your first item and price so customers know what’s cooking." action={<button className="btn btn-primary" onClick={() => setMenuDialog({ item: null })}><Plus size={16} /> Add your first item</button>} />}</>}
+        {page === "offers" && <>
+          <div className="page-intro"><div><div className="eyebrow">MORE REASONS TO ORDER <span>✳</span></div><h1>Offers</h1><p>Create discount codes your customers can use at checkout. Savings are calculated on your menu prices, never guessed by the browser.</p></div>{can(role, "offers.write") && <button className="btn btn-primary" onClick={() => setOfferDialog({ offer: null })}><Plus size={17} /> Create offer</button>}</div>
+          {offersError && <div className="approval-banner"><Info size={18} /> {offersError} <button onClick={() => setRefreshKey((n) => n + 1)}>Retry</button></div>}
+          {!demo && stats.settlementSync.linked && <div className="approval-banner"><Info size={18} /> This listing is connected to Savour Marketplace. Offers are owned there; your changes are proxied and never stored twice.</div>}
+          <div className="offer-summary"><span><BadgePercent size={18} /> <strong>{offers.filter((offer) => !offer.archived && offer.active && isOfferLive(offer)).length}</strong> live offers</span><span className="summary-divider" /><span><strong>{offers.reduce((sum, offer) => sum + offer.redemptions, 0)}</strong> redemptions</span><span className="summary-divider" /><span><strong>{money(offers.reduce((sum, offer) => sum + offer.discountGiven, 0))}</strong> discount given</span></div>
+          <div className="filter-tabs offer-tabs"><button className={offerFilter === "active" ? "selected" : ""} onClick={() => setOfferFilter("active")}>Active</button><button className={offerFilter === "archived" ? "selected" : ""} onClick={() => setOfferFilter("archived")}>Archived</button></div>
+          {offers.filter((offer) => offerFilter === "archived" ? offer.archived : !offer.archived).length ? (
+            <div className="offer-grid">{offers.filter((offer) => offerFilter === "archived" ? offer.archived : !offer.archived).map((offer) => {
+              const status = offer.archived ? "Archived" : !offer.active ? "Paused" : !isOfferLive(offer) ? "Scheduled" : "Live";
+              return <div className="panel offer-card" key={offer.id}>
+                <div className="offer-card-head"><span className="offer-code">{offer.code}</span><span className={`offer-status ${status.toLowerCase()}`}>{status}</span></div>
+                <h3>{offer.title}</h3>{offer.description && <p className="offer-description">{offer.description}</p>}
+                <div className="offer-value"><strong>{discountLabel(offer)}</strong><span>{offer.minOrder ? `On orders above ${money(offer.minOrder)}` : "No minimum order"}</span></div>
+                <div className="offer-detail-row"><span>Used</span><strong>{offer.redemptions}{offer.usageLimit ? ` / ${offer.usageLimit}` : ""}</strong></div>
+                <div className="offer-detail-row"><span>Discount given</span><strong>{money(offer.discountGiven)}</strong></div>
+                <div className="offer-detail-row"><span>Order value influenced</span><strong>{money(offer.influencedGross)}</strong></div>
+                {(offer.startsAt || offer.endsAt) && <div className="offer-schedule" suppressHydrationWarning>{offer.startsAt ? `From ${new Date(offer.startsAt).toLocaleDateString("en-IN")}` : "Starts immediately"}{offer.endsAt ? ` · Until ${new Date(offer.endsAt).toLocaleDateString("en-IN")}` : " · No end date"}</div>}
+                <div className="offer-card-actions"><button className="btn btn-outline" onClick={() => setOfferDialog({ offer })}>Edit</button><button className={`switch small-switch ${offer.active && !offer.archived ? "on" : ""}`} role="switch" aria-checked={offer.active && !offer.archived} aria-label={`${offer.code} active`} disabled={!!offerBusy || offer.archived} onClick={() => void toggleOffer(offer)}><span /></button><button className="icon-button small" aria-label={`Archive ${offer.code}`} disabled={!!offerBusy} onClick={() => void archiveOffer(offer)}><Trash2 size={16} /></button></div>
+              </div>;
+            })}</div>
+          ) : <Empty icon={<BadgePercent size={25} />} title={offerFilter === "archived" ? "No archived offers" : "No offers yet"} text={offerFilter === "archived" ? "Archived codes will appear here." : "Create a code to give customers a reason to order."} action={offerFilter === "active" ? <button className="btn btn-primary" onClick={() => setOfferDialog({ offer: null })}>Create your first offer</button> : undefined} />}
+        </>}
+        {page === "staff" && <>
+          <div className="page-intro"><div><div className="eyebrow">YOUR TEAM <span>✳</span></div><h1>Staff access</h1><p>Invite teammates with only the access they need. Permissions are enforced by the server on every action.</p></div><span className="role-chip"><ShieldCheck size={15} /> {ROLE_LABELS[role]}</span></div>
+          {staffError && <div className="approval-banner"><Info size={18} /> {staffError}</div>}
+          <form className="panel staff-add" onSubmit={(event) => void addStaff(event)}><div><strong>Add a teammate</strong><span>They need a Savour account with this email address.</span></div><input type="email" required placeholder="name@example.com" value={staffEmail} onChange={(event) => setStaffEmail(event.target.value)} disabled={!!staffBusy} /><select aria-label="Staff role" value={staffRole} onChange={(event) => setStaffRole(event.target.value as StaffRole)} disabled={!!staffBusy}>{STAFF_ROLES.map((value) => <option value={value} key={value}>{ROLE_LABELS[value]}</option>)}</select><button className="btn btn-primary" disabled={!!staffBusy || !staffEmail.trim()}>{staffBusy === "new" ? "Adding…" : "Add staff"}</button></form>
+          <div className="staff-list panel">{staff.length ? staff.map((member) => <div className="staff-row" key={member.id}><div className="staff-identity"><div className="staff-avatar">{initials(member.email)}</div><div><strong>{member.email}</strong><span>Added {timeAgo(member.createdAt)}</span></div></div><select aria-label={`Role for ${member.email}`} value={member.role} onChange={(event) => void changeStaffRole(member, event.target.value as StaffRole)} disabled={!!staffBusy}>{STAFF_ROLES.map((value) => <option value={value} key={value}>{ROLE_LABELS[value]}</option>)}</select><button className="icon-button small" aria-label={`Remove ${member.email}`} disabled={!!staffBusy} onClick={() => void removeStaff(member)}><Trash2 size={15} /></button></div>) : <Empty icon={<Users size={25} />} title="No staff yet" text="Add a teammate to share the workload." />}</div>
+          <div className="staff-guide"><div className="staff-guide-head"><ShieldCheck size={17} /><strong>What each role can do</strong></div><div className="staff-guide-grid">{(["owner", ...STAFF_ROLES] as AppRole[]).map((value) => <div className="staff-guide-card" key={value}><strong>{ROLE_LABELS[value]}</strong><span>{ROLE_DESCRIPTIONS[value]}</span></div>)}</div></div>
+        </>}
         {page === "earnings" && <><div className="page-intro"><div><div className="eyebrow">THE BIGGER PICTURE <span>✳</span></div><h1>Earnings</h1><p>A clear view of your marketplace sales and settlements.</p></div><div className="earnings-actions">{!demo && <button className="btn btn-outline" disabled={settlementBusy} onClick={() => void refreshSettlements()}>{settlementBusy ? "Refreshing…" : "Refresh settlements"}</button>}<div className="date-chip"><Clock3 size={16} /> Today</div></div></div><div className="earnings-grid"><Metric icon={<CircleDollarSign size={21} />} tone="red" title="Gross sales today" value={money(stats.todaySales)} detail="Completed order value, before fees" /><Metric icon={<CheckCircle2 size={21} />} tone="green" title="Completed today" value={String(stats.completedToday)} detail="Orders marked completed" /><Metric icon={<CreditCard size={21} />} tone="blue" title="Net deposited" value={paidSettlements.length ? money(settlementTotals.net) : "—"} detail={paidSettlements.length ? "Confirmed in Marketplace settlements" : "No confirmed deposits yet"} /><Metric icon={<ArrowDownRight size={21} />} tone="amber" title="Settlements" value={String(paidSettlements.length).padStart(2, "0")} detail={stats.settlementSync.status === "error" ? "Showing last saved records" : stats.settlementSync.lastSyncedAt ? `Synced ${stats.settlementSync.lastSyncedAt.slice(11, 16)} UTC` : "Awaiting Marketplace payouts"} /></div><div className="earnings-columns"><section className="panel earnings-panel"><div className="section-heading"><div><h3>How earnings work</h3><p>Sales and settlement are not the same thing.</p></div><span className="settings-icon"><CircleDollarSign size={20} /></span></div><div className="earnings-line"><span>Gross completed order value today</span><strong>{money(stats.todaySales)}</strong></div><div className="earnings-line"><span>Settled gross</span><strong>{paidSettlements.length ? money(settlementTotals.gross) : "—"}</strong></div><div className="earnings-line"><span>Marketplace fees & adjustments</span><strong>{paidSettlements.length ? money(settlementTotals.fees + settlementTotals.adjustments) : "—"}</strong></div><div className="earnings-line"><span>Refunds</span><strong>{paidSettlements.length ? money(settlementTotals.refunds) : "—"}</strong></div><div className="earnings-line total"><span>Net deposited</span><strong>{paidSettlements.length ? money(settlementTotals.net) : "Not available"}</strong></div><div className="info-box">{stats.settlementSync.status === "error" ? stats.settlementSync.message : paidSettlements.length ? "Amounts come from authoritative Marketplace settlement records, not estimates." : demo ? "Sample payouts are not included. Connect a Marketplace listing to see real settlements." : "Marketplace will show confirmed deposits here after the first completed order is paid out."}</div></section><section className="panel earnings-panel"><div className="section-heading"><div><h3>Settlement history</h3><p>Net records mirrored from Marketplace payouts.</p></div></div>{stats.settlements.length ? stats.settlements.map((settlement) => <div className="earnings-line" key={settlement.id}><span>#{settlement.orderNumber ?? settlement.marketplaceOrderId} · {settlement.status} · {new Date(settlement.paidAt ?? settlement.createdAt).toISOString().slice(0, 10)}</span><strong>{money(settlement.netAmount)}</strong></div>) : <div className="settlement-empty"><CreditCard size={24} /><strong>No settlement records yet</strong><span>{demo ? "Connect a Marketplace listing to see real payouts." : "Confirmed deposits will appear after Marketplace settles an order."}</span></div>}</section></div></>}
-        {page === "more" && <><div className="page-intro"><div><div className="eyebrow">MAKE IT YOURS <span>✳</span></div><h1>Business settings</h1><p>Manage the details that keep your business running.</p></div>{user && <button className="btn btn-outline" onClick={signOut}><LogOut size={16} /> Sign out</button>}</div>{business ? <BusinessSettings key={business.id} business={business} onSave={saveSettings} /> : <Empty icon={<Store size={25} />} title="Finish setting up" text="Add your business details to manage your workspace." action={<button className="btn btn-primary" onClick={() => setSetupOpen(true)}>Continue setup</button>} />}</>}
+        {page === "more" && <><div className="page-intro"><div><div className="eyebrow">MAKE IT YOURS <span>✳</span></div><h1>Business settings</h1><p>Manage the details that keep your business running.</p></div>{user && <button className="btn btn-outline" onClick={signOut}><LogOut size={16} /> Sign out</button>}</div>{!can(role, "settings.write") ? <Empty icon={<ShieldCheck size={25} />} title="Read-only access" text={`Your ${ROLE_LABELS[role].toLowerCase()} role cannot change business settings.`} /> : business ? <BusinessSettings key={business.id} business={business} onSave={saveSettings} /> : <Empty icon={<Store size={25} />} title="Finish setting up" text="Add your business details to manage your workspace." action={<button className="btn btn-primary" onClick={() => setSetupOpen(true)}>Continue setup</button>} />}</>}
         <footer className="page-footer"><span>Made for the people behind the plate <span>♥</span></span><span>© Savour Partner</span></footer>
       </div>
     </main>
@@ -294,12 +452,20 @@ export default function MerchantApp() {
     {passwordOpen && <PasswordModal onClose={() => setPasswordOpen(false)} onSuccess={() => { setPasswordOpen(false); setToast("Password changed. Other devices were signed out."); }} />}
     {setupOpen && <SetupModal initial={business && !demo ? business : null} onClose={() => setSetupOpen(false)} onBusiness={(value) => { setBusiness(value); setDemo(false); }} />}
     {menuDialog && <MenuModal item={menuDialog.item} vendor={!!vendor} onClose={() => setMenuDialog(null)} onSave={saveMenu} />}
+    {offerDialog && <OfferModal offer={offerDialog.offer} onClose={() => setOfferDialog(null)} onSave={saveOffer} />}
     {decision && <DecisionModal order={decision.order} action={decision.action} onClose={() => setDecision(null)} onConfirm={confirmOrder} />}
     {fulfilmentDialog && <FulfilmentModal order={fulfilmentDialog.order} fulfilment={fulfilmentDialog.fulfilment} onClose={() => setFulfilmentDialog(null)} onConfirm={(addressText) => changeFulfilment(fulfilmentDialog.order, fulfilmentDialog.fulfilment, addressText)} />}
-    {details && <Modal title={`Order #${details.orderNumber}`} subtitle={`${statusLabel[details.status]} · ${timeAgo(details.createdAt)}`} onClose={() => setDetails(null)}><div className="detail-meta"><span>{details.fulfilment === "delivery" ? <Bike size={17} /> : <Store size={17} />}{details.fulfilment === "delivery" ? "Delivery" : "Pickup"}</span><span><CreditCard size={17} />{details.paymentStatus === "paid" ? "Paid" : "Payment pending"} · {details.paymentMethod}</span></div><div className="detail-items">{details.items.map((item) => <div key={item.id}><span><b>{item.quantity} ×</b> {item.name}{item.modifiers?.length ? <small className="block muted">{item.modifiers.map((modifier) => `${modifier.quantity > 1 ? `${modifier.quantity} × ` : ""}${modifier.name}`).join(", ")}</small> : null}</span><strong>{money(item.lineTotal ?? item.quantity * item.unitPrice)}</strong></div>)}<div className="detail-total"><span>Order total</span><strong>{money(details.total)}</strong></div></div>{details.deliveryAddress.trim() && <div className="info-box"><strong>{details.fulfilment === "delivery" ? "Delivery address:" : "Customer address:"}</strong> {details.deliveryAddress}</div>}{details.customerNote && <div className="info-box"><strong>Customer note:</strong> {details.customerNote}</div>}{details.prepMinutes && <p className="dialog-copy">Preparation time: {details.prepMinutes} minutes</p>}{details.rejectionReason && <p className="dialog-copy">Cancellation reason: {details.rejectionReason}</p>}<button className="btn btn-outline full large" onClick={() => setDetails(null)}>Close details</button></Modal>}
+    {details && <Modal title={`Order #${details.orderNumber}`} subtitle={`${statusLabel[details.status]} · ${timeAgo(details.createdAt)}`} onClose={() => setDetails(null)}><div className="detail-meta"><span>{details.fulfilment === "delivery" ? <Bike size={17} /> : <Store size={17} />}{details.fulfilment === "delivery" ? "Delivery" : "Pickup"}</span><span><CreditCard size={17} />{details.paymentStatus === "paid" ? "Paid" : "Payment pending"} · {details.paymentMethod}</span></div>{details.courierStatus && <div className="info-box"><strong>Courier update:</strong> {details.courierStatus.replaceAll("_", " ")}{details.courierTrackingId ? ` · tracking ${details.courierTrackingId}` : ""}</div>}{details.paymentReference && <div className="info-box"><strong>Payment reference:</strong> {details.paymentReference}</div>}<div className="detail-items">{details.items.map((item) => <div key={item.id}><span><b>{item.quantity} ×</b> {item.name}{item.modifiers?.length ? <small className="block muted">{item.modifiers.map((modifier) => `${modifier.quantity > 1 ? `${modifier.quantity} × ` : ""}${modifier.name}`).join(", ")}</small> : null}</span><strong>{money(item.lineTotal ?? item.quantity * item.unitPrice)}</strong></div>)}{details.discount > 0 && <div className="detail-discount"><span>Offer {details.offerCode ? `(${details.offerCode})` : "discount"}</span><strong>−{money(details.discount)}</strong></div>}<div className="detail-total"><span>Order total</span><strong>{money(details.total)}</strong></div></div>{details.deliveryAddress.trim() && <div className="info-box"><strong>{details.fulfilment === "delivery" ? "Delivery address:" : "Customer address:"}</strong> {details.deliveryAddress}</div>}{details.customerNote && <div className="info-box"><strong>Customer note:</strong> {details.customerNote}</div>}{details.prepMinutes && <p className="dialog-copy">Preparation time: {details.prepMinutes} minutes</p>}{details.rejectionReason && <p className="dialog-copy">Cancellation reason: {details.rejectionReason}</p>}{details.rating !== null && <div className="feedback-block"><div className="feedback-head"><strong>Customer review</strong><span className={`feedback-stars ${details.rating <= 2 ? "negative" : ""}`}>{"★".repeat(details.rating)}{"☆".repeat(5 - details.rating)}</span></div>{details.review ? <p className="feedback-review">“{details.review}”</p> : <p className="feedback-review muted">No written comment.</p>}<span className="feedback-date" suppressHydrationWarning>{details.feedbackAt ? `Submitted ${timeAgo(details.feedbackAt)}` : ""}</span>{details.merchantResponse ? <div className="feedback-reply-sent"><strong>Your reply</strong><p>{details.merchantResponse}</p></div> : <FeedbackReply order={details} busy={feedbackBusy === details.id} onSend={submitFeedbackReply} />}</div>}<button className="btn btn-outline full large" onClick={() => setDetails(null)}>Close details</button></Modal>}
     {notificationsOpen && <Modal title="Order notifications" subtitle="Choose how you’d like to hear about new orders." onClose={() => setNotificationsOpen(false)}><div className="notification-setting"><div><strong>Play a sound</strong><p>When a new order is detected in this workspace.</p></div><button className={`switch ${soundEnabled ? "on" : ""}`} role="switch" aria-checked={soundEnabled} onClick={() => { const next = !soundEnabled; setSoundEnabled(next); localStorage.setItem("savour-sound", next ? "on" : "off"); if (next) playAlert(); }}><span /></button></div><div className="notification-setting"><div><strong>Browser notifications</strong><p>Permission: {notificationPermission}. Availability depends on your browser.</p></div><button className="btn btn-outline" onClick={async () => { if (!("Notification" in window)) { setToast("Browser notifications aren’t supported here."); return; } const permission = await Notification.requestPermission(); setNotificationPermission(permission); }}>Enable</button></div><div className="info-box">This web workspace checks for new orders while open. Background or closed-app delivery isn’t guaranteed.</div></Modal>}
     {helpOpen && <Modal title="Here to help" subtitle="A few tips for your workspace." onClose={() => setHelpOpen(false)}><div className="help-content"><p><strong>Getting started</strong><br />Create an account, complete your business details and add your first menu item. Your listing needs approval before it can go live.</p><p><strong>Orders and connectivity</strong><br />Keep this page open and connected to receive order updates. If your connection drops, reconnect and refresh for the latest state.</p><p><strong>Need to preview the marketplace?</strong><br /><Link href="/marketplace">Visit the customer marketplace <ExternalLink size={14} /></Link></p></div></Modal>}
   </div>;
 }
 function Metric({ icon, tone, title, value, detail, accent = false }: { icon: React.ReactNode; tone: string; title: string; value: string; detail: string; accent?: boolean }) { return <div className="metric-card"><div className="metric-top"><span className={`metric-icon ${tone}`}>{icon}</span><ArrowUpRight size={16} className="metric-arrow" /></div><span className="metric-title">{title}</span><strong className="metric-value">{value}</strong><span className={`metric-detail ${accent ? "accent" : ""}`}>{accent && <span className="tiny-pulse" />}{detail}</span></div>; }
 function Empty({ icon, title, text, action }: { icon: React.ReactNode; title: string; text: string; action?: React.ReactNode }) { return <div className="empty-state"><span>{icon}</span><strong>{title}</strong><p>{text}</p>{action}</div>; }
+function FeedbackReply({ order, busy, onSend }: { order: Order; busy: boolean; onSend: (order: Order, response: string) => Promise<void> }) {
+  const [response, setResponse] = useState("");
+  return <form className="feedback-reply" onSubmit={(event) => { event.preventDefault(); if (response.trim() && !busy) { const sent = response.trim(); void onSend(order, sent).then(() => setResponse("")); } }}>
+    <label>Reply to this review<textarea maxLength={500} rows={3} required value={response} onChange={(event) => setResponse(event.target.value)} placeholder="Thank them, or explain what happened…" /></label>
+    <button className="btn btn-primary" disabled={busy || !response.trim()}>{busy ? "Sending…" : "Send reply"}</button>
+  </form>;
+}

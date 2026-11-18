@@ -5,7 +5,8 @@ import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 import { and, desc, eq, lt, notInArray } from "drizzle-orm";
 import { db } from "@/db";
-import { auditLogs, businesses, sessions, users } from "@/db/schema";
+import { auditLogs, businesses, sessions, staffMembers, users } from "@/db/schema";
+import { can, isStaffRole, type AppRole, type Permission } from "@/lib/roles";
 import { logError, warn } from "@/lib/telemetry";
 
 const scrypt = promisify(scryptCallback);
@@ -23,6 +24,10 @@ export const BODY_LIMITS = {
   orders: 16 * 1024,
   marketplace: 128 * 1024,
   marketplaceLink: 8 * 1024,
+  feedback: 4 * 1024,
+  offers: 16 * 1024,
+  staff: 4 * 1024,
+  providerEvent: 8 * 1024,
 } as const;
 
 export function sha256(value: string) { return createHash("sha256").update(value).digest("hex"); }
@@ -110,11 +115,28 @@ export async function requireUser({ allowUnverified = false }: { allowUnverified
   }
   return user;
 }
-export async function requireBusiness() {
+/** Resolve the outlet an account belongs to, either as its owner or as an active staff member. */
+export async function businessForUser(userId: string): Promise<{ business: typeof businesses.$inferSelect; role: AppRole } | null> {
+  const [owned] = await db.select().from(businesses).where(eq(businesses.ownerId, userId)).limit(1);
+  if (owned) return { business: owned, role: "owner" };
+  const [membership] = await db.select({ staff: staffMembers, business: businesses })
+    .from(staffMembers)
+    .innerJoin(businesses, eq(staffMembers.businessId, businesses.id))
+    .where(and(eq(staffMembers.userId, userId), eq(staffMembers.status, "active")))
+    .limit(1);
+  if (!membership) return null;
+  return { business: membership.business, role: isStaffRole(membership.staff.role) ? membership.staff.role : "server" };
+}
+
+export async function requireBusiness(permission?: Permission) {
   const user = await requireUser();
-  const [business] = await db.select().from(businesses).where(eq(businesses.ownerId, user.id)).limit(1);
-  if (!business) throw new ApiError("Finish setting up your business first.", 404);
-  return { user, business };
+  const found = await businessForUser(user.id);
+  if (!found) throw new ApiError("Finish setting up your business first.", 404);
+  if (permission && !can(found.role, permission)) {
+    await recordAudit({ event: "staff.permission_denied", outcome: "denied", userId: user.id, businessId: found.business.id, detail: { permission, role: found.role } });
+    throw new ApiError("Your role doesn't allow this action.", 403);
+  }
+  return { user, business: found.business, role: found.role };
 }
 export function sameOrigin(request: NextRequest) {
   const origin = request.headers.get("origin");
@@ -191,7 +213,7 @@ export async function recordAudit({ request, event, outcome, userId, businessId,
 }
 
 export function fail(error: unknown, request?: NextRequest) {
-  if (error instanceof ApiError) return NextResponse.json({ error: error.message }, { status: error.status, headers: error.code === "AUTH_REQUIRED" ? { [AUTH_REQUIRED_HEADER]: "1" } : undefined });
+  if (error instanceof ApiError) return NextResponse.json({ error: error.message, ...(error.code ? { code: error.code } : {}) }, { status: error.status, headers: error.code === "AUTH_REQUIRED" ? { [AUTH_REQUIRED_HEADER]: "1" } : undefined });
   logError("api.unhandled_error", error, request ? requestContext(request) : {});
   return NextResponse.json({ error: "Something went wrong. Please try again." }, { status: 500 });
 }

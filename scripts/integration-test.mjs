@@ -1,6 +1,6 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 
 const base = process.env.TEST_BASE_URL || "http://127.0.0.1:3000";
@@ -31,6 +31,11 @@ async function request(path, { method = "GET", cookie, body, headers = {} } = {}
   }
   const data = await response.json();
   return { status: response.status, data, cookie: response.headers.get("set-cookie")?.split(";")[0] };
+}
+function signedProviderEvent(path, secret, body, { timestamp = Math.floor(Date.now() / 1000), signingSecret = secret } = {}) {
+  const raw = JSON.stringify(body);
+  const signature = createHmac("sha256", signingSecret).update(`${timestamp}.${raw}`).digest("hex");
+  return request(path, { method: "POST", headers: { "x-savour-signature": `t=${timestamp},v1=${signature}` }, body });
 }
 async function adminOwnerRequest(body) {
   return request("/api/admin/owner", { method: "POST", body, headers: { authorization: `Bearer ${process.env.MARKETPLACE_ADMIN_TOKEN ?? ""}` } });
@@ -157,7 +162,94 @@ try {
   assert.equal((await transition(restaurant.cookie, placed.data.order.id, "preparing", "ready")).status, 200);
   const tracking = await request(`/api/marketplace?orderId=${placed.data.order.id}&token=${payload.idempotencyKey}`); assert.equal(tracking.data.order.status, "ready");
   assert.equal((await request(`/api/marketplace?orderId=${placed.data.order.id}&token=${randomUUID()}`)).status, 404);
+  const earlyFeedback = await request("/api/marketplace/feedback", { method: "POST", body: { orderId: placed.data.order.id, token: payload.idempotencyKey, rating: 5 } });
+  assert.equal(earlyFeedback.status, 409);
   assert.equal((await transition(restaurant.cookie, placed.data.order.id, "ready", "completed")).status, 200);
+  const wrongTokenFeedback = await request("/api/marketplace/feedback", { method: "POST", body: { orderId: placed.data.order.id, token: randomUUID(), rating: 5 } });
+  assert.equal(wrongTokenFeedback.status, 404);
+  const reviewed = await request("/api/marketplace/feedback", { method: "POST", body: { orderId: placed.data.order.id, token: payload.idempotencyKey, rating: 2, review: "Cold food" } });
+  assert.equal(reviewed.status, 200); assert.equal(reviewed.data.feedback.rating, 2); assert.equal(reviewed.data.alreadySubmitted, false);
+  const duplicateReview = await request("/api/marketplace/feedback", { method: "POST", body: { orderId: placed.data.order.id, token: payload.idempotencyKey, rating: 5 } });
+  assert.equal(duplicateReview.status, 200); assert.equal(duplicateReview.data.alreadySubmitted, true); assert.equal(duplicateReview.data.feedback.rating, 2);
+  const feedbackTracking = await request(`/api/marketplace?orderId=${placed.data.order.id}&token=${payload.idempotencyKey}`);
+  assert.equal(feedbackTracking.data.order.feedback.rating, 2); assert.equal(feedbackTracking.data.order.feedback.merchantResponse, "");
+  const feedbackList = await request("/api/merchant/orders?status=feedback", { cookie: restaurant.cookie });
+  assert.ok(feedbackList.data.orders.some((order) => order.id === placed.data.order.id && order.rating === 2));
+  const pendingFeedback = await request("/api/merchant/overview", { cookie: restaurant.cookie });
+  assert.equal(pendingFeedback.data.overview.feedback.averageRating, 2); assert.equal(pendingFeedback.data.overview.feedback.reviewCount, 1);
+  assert.equal(pendingFeedback.data.overview.feedback.badOrders, 1); assert.equal(pendingFeedback.data.overview.feedback.pendingReplies, 1);
+  const reply = await request("/api/merchant/feedback", { method: "PATCH", cookie: restaurant.cookie, body: { id: placed.data.order.id, response: "Sorry about that — we'll keep it hotter." } });
+  assert.equal(reply.status, 200); assert.equal(reply.data.proxied, false); assert.match(reply.data.feedback.merchantResponse, /keep it hotter/);
+  const secondReply = await request("/api/merchant/feedback", { method: "PATCH", cookie: restaurant.cookie, body: { id: placed.data.order.id, response: "Another reply" } });
+  assert.equal(secondReply.status, 409);
+  const repliedTracking = await request(`/api/marketplace?orderId=${placed.data.order.id}&token=${payload.idempotencyKey}`);
+  assert.match(repliedTracking.data.order.feedback.merchantResponse, /keep it hotter/);
+  assert.equal(scalar(`select count(*) from order_events where order_id='${placed.data.order.id}' and reason='Customer feedback submitted'`), "1");
+  assert.equal(scalar(`select count(*) from order_events where order_id='${placed.data.order.id}' and reason='Merchant replied to customer feedback'`), "1");
+  // Offers: owner-scoped CRUD, public visibility, server-side discounts, limits and idempotency.
+  const offerBody = (code, extra = {}) => ({ code, title: `${code} title`, description: "", discountType: "percent", value: 10, minOrder: 0, maxDiscount: null, startsAt: null, endsAt: null, usageLimit: null, active: true, ...extra });
+  const save10 = await request("/api/merchant/offers", { method: "POST", cookie: restaurant.cookie, body: offerBody("SAVE10") });
+  assert.equal(save10.status, 201); assert.equal(save10.data.offer.code, "SAVE10");
+  assert.equal((await request("/api/merchant/offers", { method: "POST", cookie: restaurant.cookie, body: offerBody("SAVE10") })).status, 409);
+  assert.equal((await request("/api/merchant/offers", { method: "POST", cookie: restaurant.cookie, body: offerBody("BAD!", { value: 200 }) })).status, 400);
+  const flatOffer = await request("/api/merchant/offers", { method: "POST", cookie: restaurant.cookie, body: offerBody("FLAT50", { discountType: "flat", value: 5000 }) }); assert.equal(flatOffer.status, 201);
+  const minOffer = await request("/api/merchant/offers", { method: "POST", cookie: restaurant.cookie, body: offerBody("MIN500", { minOrder: 50000 }) }); assert.equal(minOffer.status, 201);
+  const futureOffer = await request("/api/merchant/offers", { method: "POST", cookie: restaurant.cookie, body: offerBody("FUTURE", { startsAt: new Date(Date.now() + 86400000).toISOString() }) }); assert.equal(futureOffer.status, 201);
+  const limitOffer = await request("/api/merchant/offers", { method: "POST", cookie: restaurant.cookie, body: offerBody("LIMIT1", { usageLimit: 1 }) }); assert.equal(limitOffer.status, 201);
+  assert.equal((await request("/api/merchant/offers", { cookie: restaurant.cookie })).data.offers.length, 5);
+  assert.equal((await request("/api/merchant/offers", { cookie: vendor.cookie })).data.offers.length, 0);
+  const publicWithOffers = await request(`/api/marketplace?businessId=${restaurant.business.id}`);
+  assert.ok(publicWithOffers.data.offers.some((offer) => offer.code === "SAVE10"));
+  assert.ok(!publicWithOffers.data.offers.some((offer) => offer.code === "FUTURE"));
+  assert.ok(!("usageLimit" in publicWithOffers.data.offers[0]));
+  const offerPayload = { businessId: restaurant.business.id, idempotencyKey: randomUUID(), customerName: "Offer customer", fulfilment: "pickup", items: [{ id: rItem.data.item.id, quantity: 1 }], offerCode: "SAVE10" };
+  const discounted = await request("/api/marketplace", { method: "POST", body: offerPayload });
+  assert.equal(discounted.status, 201); assert.equal(discounted.data.order.total, 22500); assert.equal(discounted.data.order.discount, 2500); assert.equal(discounted.data.order.offerCode, "SAVE10");
+  assert.equal((await request("/api/marketplace", { method: "POST", body: { ...offerPayload, offerCode: "FLAT50" } })).status, 409);
+  assert.equal((await request("/api/marketplace", { method: "POST", body: { ...offerPayload, idempotencyKey: randomUUID(), offerCode: "NOPE" } })).status, 404);
+  assert.equal((await request("/api/marketplace", { method: "POST", body: { ...offerPayload, idempotencyKey: randomUUID(), offerCode: "MIN500" } })).status, 409);
+  assert.equal((await request("/api/marketplace", { method: "POST", body: { ...offerPayload, idempotencyKey: randomUUID(), offerCode: "FUTURE" } })).status, 409);
+  assert.equal((await request("/api/marketplace", { method: "POST", body: { ...offerPayload, idempotencyKey: randomUUID(), offerCode: "LIMIT1" } })).status, 201);
+  assert.equal((await request("/api/marketplace", { method: "POST", body: { ...offerPayload, idempotencyKey: randomUUID(), offerCode: "LIMIT1" } })).status, 409);
+  const paused = await request("/api/merchant/offers", { method: "PATCH", cookie: restaurant.cookie, body: { id: save10.data.offer.id, action: "toggle" } }); assert.equal(paused.status, 200); assert.equal(paused.data.offer.active, false);
+  assert.ok(!(await request(`/api/marketplace?businessId=${restaurant.business.id}`)).data.offers.some((offer) => offer.code === "SAVE10"));
+  assert.equal((await request("/api/marketplace", { method: "POST", body: { ...offerPayload, idempotencyKey: randomUUID(), offerCode: "SAVE10" } })).status, 404);
+  assert.equal((await request("/api/merchant/offers", { method: "PATCH", cookie: restaurant.cookie, body: { id: save10.data.offer.id, action: "toggle" } })).status, 200);
+  assert.equal((await request("/api/merchant/offers", { method: "DELETE", cookie: restaurant.cookie, body: { id: minOffer.data.offer.id } })).status, 200);
+  const archivedOffer = (await request("/api/merchant/offers", { cookie: restaurant.cookie })).data.offers.find((offer) => offer.code === "MIN500");
+  assert.equal(archivedOffer.archived, true); assert.equal(archivedOffer.active, false);
+  const offerMetrics = (await request("/api/merchant/offers", { cookie: restaurant.cookie })).data.offers.find((offer) => offer.code === "SAVE10");
+  assert.equal(offerMetrics.redemptions, 1); assert.equal(offerMetrics.discountGiven, 2500);
+  assert.equal(scalar(`select discount from orders where id='${discounted.data.order.id}'`), "2500");
+  const discountedDto = (await request("/api/merchant/orders?status=all", { cookie: restaurant.cookie })).data.orders.find((order) => order.id === discounted.data.order.id);
+  assert.equal(discountedDto.discount, 2500); assert.equal(discountedDto.offerCode, "SAVE10");
+  // Staff roles: owner-managed access, server-side permission checks and soft removal.
+  const invited = await request("/api/merchant/staff", { method: "POST", cookie: restaurant.cookie, body: { email: emails[2], role: "kitchen" } });
+  assert.equal(invited.status, 201); assert.equal(invited.data.staff.role, "kitchen");
+  assert.equal((await request("/api/merchant/staff", { method: "POST", cookie: restaurant.cookie, body: { email: emails[2], role: "manager" } })).status, 409);
+  assert.equal((await request("/api/merchant/staff", { cookie: reassignTarget.cookie })).status, 403);
+  const staffAuth = await request("/api/auth", { cookie: reassignTarget.cookie });
+  assert.equal(staffAuth.data.business.id, restaurant.business.id); assert.equal(staffAuth.data.role, "kitchen");
+  assert.equal((await request("/api/merchant/orders", { cookie: reassignTarget.cookie })).status, 200);
+  assert.equal((await request("/api/merchant/menu", { method: "PATCH", cookie: reassignTarget.cookie, body: { action: "availability", id: rItem.data.item.id, available: false } })).status, 403);
+  assert.equal((await request("/api/merchant/offers", { cookie: reassignTarget.cookie })).status, 403);
+  assert.equal((await request("/api/merchant/staff", { method: "POST", cookie: reassignTarget.cookie, body: { email: emails[1], role: "server" } })).status, 403);
+  assert.equal((await transition(reassignTarget.cookie, discounted.data.order.id, "new", "accepted", { prepMinutes: 15 })).status, 200);
+  const promoted = await request("/api/merchant/staff", { method: "PATCH", cookie: restaurant.cookie, body: { id: invited.data.staff.id, role: "manager" } });
+  assert.equal(promoted.status, 200); assert.equal(promoted.data.staff.role, "manager");
+  assert.equal((await request("/api/merchant/offers", { cookie: reassignTarget.cookie })).status, 200);
+  assert.equal((await request("/api/merchant/staff", { cookie: reassignTarget.cookie })).status, 403);
+  const managerOffer = await request("/api/merchant/offers", { method: "POST", cookie: reassignTarget.cookie, body: offerBody("MGR10") });
+  assert.equal(managerOffer.status, 201);
+  assert.equal((await request("/api/merchant/offers", { method: "DELETE", cookie: restaurant.cookie, body: { id: managerOffer.data.offer.id } })).status, 200);
+  assert.equal((await request("/api/merchant/staff", { method: "PATCH", cookie: restaurant.cookie, body: { id: invited.data.staff.id, action: "remove" } })).status, 200);
+  assert.equal((await request("/api/auth", { cookie: reassignTarget.cookie })).data.business, null);
+  assert.equal((await request("/api/merchant/orders", { cookie: reassignTarget.cookie })).status, 404);
+  const reinvited = await request("/api/merchant/staff", { method: "POST", cookie: restaurant.cookie, body: { email: emails[2], role: "server" } });
+  assert.equal(reinvited.status, 200); assert.equal(reinvited.data.staff.id, invited.data.staff.id); assert.equal(reinvited.data.staff.role, "server");
+  assert.equal((await request("/api/merchant/staff", { method: "DELETE", cookie: restaurant.cookie, body: { id: invited.data.staff.id } })).status, 200);
+  assert.ok(Number(scalar(`select count(*) from audit_logs where event='staff.permission_denied' and outcome='denied' and business_id='${restaurant.business.id}'`)) >= 3);
+  assert.equal(scalar(`select count(*) from audit_logs where event='staff.invited' and outcome='success' and business_id='${restaurant.business.id}' and detail->>'targetUserId'='${reassignTarget.data.user.id}'`), "1");
   assert.equal((await request("/api/merchant/business", { method: "PATCH", cookie: restaurant.cookie, body: { action: "settings", pickupEnabled: true, deliveryEnabled: true, hoursEnabled: false, opensAt: "09:00", closesAt: "22:00" } })).status, 200);
   const deliveryPayload = { ...payload, idempotencyKey: randomUUID(), fulfilment: "delivery" };
   assert.equal((await request("/api/marketplace", { method: "POST", body: deliveryPayload })).status, 400);
@@ -174,6 +266,45 @@ try {
   assert.deepEqual([dispatched.status, switched.status].sort(), [200, 409]);
   const racedTracking = await request(`/api/marketplace?orderId=${delivery.data.order.id}&token=${deliveryPayload.idempotencyKey}`);
   assert.ok(!(racedTracking.data.order.status === "out_for_delivery" && racedTracking.data.order.fulfilment === "pickup"));
+  // Provider seam: signed webhooks update order state idempotently and reject stale/replayed events.
+  const courierSecret = process.env.COURIER_WEBHOOK_SECRET ?? "", paymentSecret = process.env.PAYMENT_WEBHOOK_SECRET ?? "";
+  const providerEventsEnabled = courierSecret.length >= 32 && paymentSecret.length >= 32;
+  if (providerEventsEnabled) {
+    const providerOrder = await request("/api/marketplace", { method: "POST", body: { ...deliveryPayload, idempotencyKey: randomUUID(), deliveryAddress: "Provider test address" } });
+    assert.equal(providerOrder.status, 201);
+    for (const [from, to, extra] of [["new", "accepted", { prepMinutes: 10 }], ["accepted", "preparing", {}], ["preparing", "ready", {}], ["ready", "out_for_delivery", {}]]) {
+      const result = await transition(restaurant.cookie, providerOrder.data.order.id, from, to, extra);
+      assert.equal(result.status, 200);
+      if (to === "out_for_delivery") assert.ok(result.data.dispatch);
+    }
+    const base = { eventId: `courier_${run}`, businessId: restaurant.business.id, orderId: providerOrder.data.order.id, occurredAt: new Date(Date.now() - 120000).toISOString() };
+    const assigned = { ...base, type: "assigned", trackingId: "TRACK-PROVIDER" };
+    assert.equal((await signedProviderEvent("/api/integration/courier", courierSecret, assigned, { signingSecret: "x".repeat(32) })).status, 401);
+    assert.equal((await signedProviderEvent("/api/integration/courier", courierSecret, assigned, { timestamp: Math.floor(Date.now() / 1000) - 600 })).status, 401);
+    assert.equal((await signedProviderEvent("/api/integration/courier", courierSecret, { ...assigned, type: "paid" })).status, 400);
+    assert.equal((await signedProviderEvent("/api/integration/courier", courierSecret, { ...assigned, orderId: randomUUID() })).status, 404);
+    const first = await signedProviderEvent("/api/integration/courier", courierSecret, assigned);
+    assert.equal(first.status, 200); assert.equal(first.data.outcome, "applied"); assert.equal(first.data.courierStatus, "assigned");
+    const replay = await signedProviderEvent("/api/integration/courier", courierSecret, assigned);
+    assert.equal(replay.status, 200); assert.equal(replay.data.outcome, "duplicate");
+    const stale = await signedProviderEvent("/api/integration/courier", courierSecret, { ...base, eventId: `courier_stale_${run}`, type: "picked_up", occurredAt: new Date(Date.now() - 180000).toISOString() });
+    assert.equal(stale.status, 200); assert.equal(stale.data.outcome, "ignored");
+    const delivered = await signedProviderEvent("/api/integration/courier", courierSecret, { ...base, eventId: `courier_done_${run}`, type: "delivered", occurredAt: new Date(Date.now() - 60000).toISOString() });
+    assert.equal(delivered.status, 200); assert.equal(delivered.data.outcome, "applied"); assert.equal(delivered.data.status, "completed");
+    const paid = await signedProviderEvent("/api/integration/payment", paymentSecret, { eventId: `payment_${run}`, businessId: restaurant.business.id, orderCode: String(providerOrder.data.order.orderNumber), type: "paid", occurredAt: new Date(Date.now() - 30000).toISOString(), reference: `PAY-${run}` });
+    assert.equal(paid.status, 200); assert.equal(paid.data.outcome, "applied"); assert.equal(paid.data.paymentStatus, "paid");
+    const stalePayment = await signedProviderEvent("/api/integration/payment", paymentSecret, { eventId: `payment_stale_${run}`, businessId: restaurant.business.id, orderId: providerOrder.data.order.id, type: "failed", occurredAt: new Date(Date.now() - 90000).toISOString() });
+    assert.equal(stalePayment.status, 200); assert.equal(stalePayment.data.outcome, "ignored");
+    const providerDto = (await request("/api/merchant/orders?status=all", { cookie: restaurant.cookie })).data.orders.find((order) => order.id === providerOrder.data.order.id);
+    assert.equal(providerDto.status, "completed"); assert.equal(providerDto.courierStatus, "delivered"); assert.equal(providerDto.courierTrackingId, "TRACK-PROVIDER");
+    assert.equal(providerDto.paymentStatus, "paid"); assert.equal(providerDto.paymentReference, `PAY-${run}`);
+    assert.equal(scalar(`select count(*) from provider_events where order_id='${providerOrder.data.order.id}' and outcome='applied'`), "3");
+    assert.equal(scalar(`select count(*) from provider_events where order_id='${providerOrder.data.order.id}' and outcome='ignored'`), "2");
+    assert.equal(scalar(`select count(*) from order_events where order_id='${providerOrder.data.order.id}' and reason='Courier assigned via webhook'`), "1");
+    assert.equal(scalar(`select count(*) from order_events where order_id='${providerOrder.data.order.id}' and reason='Courier delivered via webhook'`), "1");
+    assert.equal(scalar(`select count(*) from order_events where order_id='${providerOrder.data.order.id}' and reason='Payment paid via webhook'`), "1");
+    assert.ok(Number(scalar(`select count(*) from audit_logs where event='provider_event.rejected' and outcome='denied' and detail->>'provider'='courier'`)) >= 2);
+  } else console.warn("Skipping signed provider webhook assertions: set COURIER_WEBHOOK_SECRET and PAYMENT_WEBHOOK_SECRET (32+ chars each).");
   assert.equal((await transition(vendor.cookie, vOrder.data.order.id, "new", "rejected", { reason: "Sold out" })).status, 200);
   const second = await request("/api/marketplace", { method: "POST", body: { ...vPayload, idempotencyKey: randomUUID() } }); assert.equal(second.status, 201);
   assert.equal((await transition(vendor.cookie, second.data.order.id, "new", "accepted", { prepMinutes: 15 })).status, 200);
@@ -194,7 +325,7 @@ try {
   const updatedPublicMenu = await request(`/api/marketplace?businessId=${restaurant.business.id}`); assert.equal(updatedPublicMenu.data.items.find((item) => item.id === rItem.data.item.id).price, 30000);
   const settlementExternal = `settle_${run}`, settlementOrder = `order_${run}`;
   sql(`insert into settlements (business_id, external_id, marketplace_order_id, order_number, amount, gross_amount, commission_amount, refund_amount, adjustment_amount, currency, status, reference, paid_at, source_updated_at) values ('${restaurant.business.id}', '${settlementExternal}', '${settlementOrder}', 2847, 54999, 56700, 1701, 0, 0, 'INR', 'paid', 'PAYOUT_${run}', now(), now())`);
-  const earnings = await request("/api/merchant/overview", { cookie: restaurant.cookie }); assert.equal(earnings.data.overview.todaySales, 50000); assert.equal(earnings.data.overview.completedToday, 1);
+  const earnings = await request("/api/merchant/overview", { cookie: restaurant.cookie }); assert.equal(earnings.data.overview.todaySales, providerEventsEnabled ? 100000 : 50000); assert.equal(earnings.data.overview.completedToday, providerEventsEnabled ? 2 : 1);
   assert.equal(earnings.data.overview.settlements.length, 1);
   assert.deepEqual({ ...earnings.data.overview.settlements[0], id: undefined, paidAt: undefined, sourceUpdatedAt: undefined, createdAt: undefined }, { id: undefined, externalId: settlementExternal, marketplaceOrderId: settlementOrder, orderNumber: 2847, netAmount: 54999, grossAmount: 56700, commissionAmount: 1701, refundAmount: 0, adjustmentAmount: 0, currency: "INR", status: "paid", reference: `PAYOUT_${run}`, paidAt: undefined, sourceUpdatedAt: undefined, createdAt: undefined });
   assert.equal(earnings.data.overview.settlementSync.linked, false);
@@ -268,8 +399,8 @@ try {
   assert.equal((await adminOwnerRequest({ businessId: vendor.business.id, email: emails[1] })).status, 200);
   assert.equal(scalar(`select count(*) from audit_logs where event='admin.reassign_owner' and outcome='success' and business_id='${vendor.business.id}' and detail->>'newOwnerId'='${reassignTarget.data.user.id}'`), "1");
   assert.equal(scalar(`select count(*) from audit_logs where event='admin.reassign_owner' and outcome='failure' and business_id='${vendor.business.id}' and detail->>'reason'='target_not_found'`), "1");
-  console.log("PASS: security headers, opt-in verification gate, registration, approval, owner recovery, marketplace, concurrency, sessions, password change, hashed audit trail, email verification, single-use password reset and authoritative settlement mirror");
+  console.log("PASS: security headers, opt-in verification gate, registration, approval, owner recovery, marketplace, concurrency, feedback and replies, offers and server-side discounts, staff roles and permissions, signed courier/payment webhooks, sessions, password change, hashed audit trail, email verification, single-use password reset and authoritative settlement mirror");
 } finally {
-  try { sql(`begin; delete from audit_logs where actor_user_id in (${owners}) or business_id in (${shops}) or actor_email_hash in (${emailHashes}) or (event in ('auth.verify_email','auth.reset_password') and outcome='failure'); delete from account_tokens where user_id in (${owners}); delete from order_events where order_id in (${testOrders}); delete from order_items where order_id in (${testOrders}); delete from orders where business_id in (${shops}); delete from menu_items where business_id in (${shops}); delete from settlements where business_id in (${shops}); delete from sessions where user_id in (${owners}); delete from businesses where owner_id in (${owners}); delete from users where id in (${owners}); commit;`); }
+  try { sql(`begin; delete from audit_logs where actor_user_id in (${owners}) or business_id in (${shops}) or actor_email_hash in (${emailHashes}) or (event in ('auth.verify_email','auth.reset_password') and outcome='failure'); delete from account_tokens where user_id in (${owners}); delete from order_events where order_id in (${testOrders}); delete from order_items where order_id in (${testOrders}); delete from provider_events where order_id in (${testOrders}); delete from orders where business_id in (${shops}); delete from offers where business_id in (${shops}); delete from staff_members where business_id in (${shops}); delete from menu_items where business_id in (${shops}); delete from settlements where business_id in (${shops}); delete from sessions where user_id in (${owners}); delete from businesses where owner_id in (${owners}); delete from users where id in (${owners}); commit;`); }
   catch (error) { console.error("Could not clean up disposable test records:", error.message); process.exitCode = 1; }
 }

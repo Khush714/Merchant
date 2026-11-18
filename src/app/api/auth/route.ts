@@ -1,11 +1,11 @@
 import { eq } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { businesses, users } from "@/db/schema";
+import { users } from "@/db/schema";
 import { consumeAccountToken, createAccountToken, isAccountToken } from "@/lib/account-tokens";
 import { isEmailConfigured, sendPasswordResetEmail, sendVerificationEmail } from "@/lib/email";
 import { getMarketplaceLink } from "@/lib/marketplace-bridge";
-import { ApiError, BODY_LIMITS, changePassword, createSession, currentUser, deleteAllSessions, deleteSession, fail, hashPassword, rateLimit, readJson, recordAudit, requireUser, sameOrigin, textValue, verificationRequired, verifyPassword } from "@/lib/server";
+import { ApiError, BODY_LIMITS, businessForUser, changePassword, createSession, currentUser, deleteAllSessions, deleteSession, fail, hashPassword, rateLimit, readJson, recordAudit, requireUser, sameOrigin, textValue, verificationRequired, verifyPassword } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
 
@@ -19,12 +19,16 @@ async function withListingStatus<T extends { id: string; approvalStatus: string 
   return (await getMarketplaceLink(business.id)) ? { ...business, approvalStatus: "approved" as const } : business;
 }
 
+async function listingFor(userId: string) {
+  const found = await businessForUser(userId);
+  return { business: await withListingStatus(found?.business), role: found?.role ?? null };
+}
+
 export async function GET(request: NextRequest) {
   try {
     const user = await currentUser();
-    if (!user) return NextResponse.json({ user: null, business: null, verificationRequired: verificationRequired() });
-    const [business] = await db.select().from(businesses).where(eq(businesses.ownerId, user.id)).limit(1);
-    return NextResponse.json({ user, business: await withListingStatus(business), verificationRequired: verificationRequired() });
+    if (!user) return NextResponse.json({ user: null, business: null, role: null, verificationRequired: verificationRequired() });
+    return NextResponse.json({ user, ...(await listingFor(user.id)), verificationRequired: verificationRequired() });
   } catch (error) { return fail(error, request); }
 }
 export async function POST(request: NextRequest) {
@@ -140,8 +144,7 @@ export async function POST(request: NextRequest) {
         await recordAudit({ request, event: "auth.login", outcome: "failure", email, detail: { reason: "invalid_credentials" } });
         throw new ApiError("Incorrect email or password.", 401);
       }
-      const [business] = await db.select().from(businesses).where(eq(businesses.ownerId, record.id)).limit(1);
-      const response = NextResponse.json({ user: authUser(record), business: await withListingStatus(business), verificationRequired: verificationRequired() });
+      const response = NextResponse.json({ user: authUser(record), ...(await listingFor(record.id)), verificationRequired: verificationRequired() });
       await createSession(record.id, response);
       await recordAudit({ request, event: "auth.login", outcome: "success", userId: record.id, email: record.email });
       return response;
