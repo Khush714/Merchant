@@ -17,6 +17,8 @@ export {
   parseRemoteFeedbackReply,
   parseRemoteMenu,
   parseRemoteMenuItems,
+  parseRemoteMenuModifierGroupResponse,
+  parseRemoteMenuModifierGroups,
   parseRemoteOffer,
   parseRemoteOffers,
   parseRemoteOk,

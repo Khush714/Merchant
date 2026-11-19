@@ -1,4 +1,4 @@
-import { boolean, index, integer, jsonb, pgTable, serial, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { boolean, index, integer, jsonb, pgTable, primaryKey, serial, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -113,10 +113,44 @@ export const menuItems = pgTable("menu_items", {
   imageUrl: text("image_url").notNull().default(""),
   dietary: text("dietary").notNull().default("unspecified"),
   available: boolean("available").notNull().default(true),
+  /** Null = untracked; zero = sold out. Paired listings ignore this local copy. */
+  stockQuantity: integer("stock_quantity"),
   archived: boolean("archived").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [index("menu_business_idx").on(table.businessId, table.archived)]);
+
+/** Local/demo modifier groups. Paired listings use the Marketplace copies instead. */
+export const menuModifierGroups = pgTable("menu_modifier_groups", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  minSelect: integer("min_select").notNull().default(0),
+  maxSelect: integer("max_select").notNull().default(1),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [index("menu_mod_groups_business_idx").on(table.businessId)]);
+
+export const menuModifierOptions = pgTable("menu_modifier_options", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  groupId: uuid("group_id").notNull().references(() => menuModifierGroups.id, { onDelete: "cascade" }),
+  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  priceCents: integer("price_cents").notNull().default(0),
+  isVeg: boolean("is_veg").notNull().default(true),
+  available: boolean("available").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [index("menu_mod_options_group_idx").on(table.groupId)]);
+
+export const menuItemModifierGroups = pgTable("menu_item_modifier_groups", {
+  menuItemId: uuid("menu_item_id").notNull().references(() => menuItems.id, { onDelete: "cascade" }),
+  modifierGroupId: uuid("modifier_group_id").notNull().references(() => menuModifierGroups.id, { onDelete: "cascade" }),
+  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+}, (table) => [
+  primaryKey({ columns: [table.menuItemId, table.modifierGroupId] }),
+  index("menu_item_mod_groups_business_idx").on(table.businessId),
+]);
 
 /** Merchant-created promotions. Paired listings keep offers in Marketplace; these rows stay local. */
 export const offers = pgTable("offers", {

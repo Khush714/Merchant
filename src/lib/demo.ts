@@ -1,14 +1,28 @@
-import type { Business, FeedbackSummary, MenuItem, Offer, Order, Overview } from "@/lib/types";
+import type { Business, FeedbackSummary, MenuItem, MenuModifierGroup, Offer, Order, Overview } from "@/lib/types";
 
 // Explicitly isolated, non-persistent sample workspace. Never used by authenticated API routes.
 export const demoBusiness: Business = { id: "demo", type: "restaurant", name: "The Curry Leaf", ownerName: "Ananya", phone: "", address: "Indiranagar, Bengaluru", category: "North Indian", registrationDetails: "", approvalStatus: "approved", isOpen: true, pickupEnabled: true, deliveryEnabled: true, hoursEnabled: true, opensAt: "09:00", closesAt: "22:00" };
 export const demoMenu: MenuItem[] = [
-  { id: "demo-item-1", businessId: "demo", name: "Butter Chicken", description: "Tender chicken in a rich, creamy tomato gravy", price: 38900, category: "Mains", imageUrl: "", dietary: "nonveg", available: true, archived: false },
-  { id: "demo-item-2", businessId: "demo", name: "Paneer Tikka Masala", description: "Grilled paneer in a fragrant spiced gravy", price: 34900, category: "Mains", imageUrl: "", dietary: "veg", available: true, archived: false },
-  { id: "demo-item-3", businessId: "demo", name: "Chicken Biryani", description: "Aromatic basmati rice, spices and chicken", price: 32900, category: "Rice & Biryani", imageUrl: "", dietary: "nonveg", available: true, archived: false },
-  { id: "demo-item-4", businessId: "demo", name: "Garlic Butter Naan", description: "Freshly baked and brushed with garlic butter", price: 8900, category: "Breads", imageUrl: "", dietary: "veg", available: true, archived: false },
-  { id: "demo-item-5", businessId: "demo", name: "Mango Lassi", description: "A sweet, creamy mango yogurt drink", price: 12900, category: "Drinks", imageUrl: "", dietary: "veg", available: false, archived: false },
+  { id: "demo-item-1", businessId: "demo", name: "Butter Chicken", description: "Tender chicken in a rich, creamy tomato gravy", price: 38900, category: "Mains", imageUrl: "", dietary: "nonveg", available: true, archived: false, stockQuantity: null, modifierGroupIds: [] },
+  { id: "demo-item-2", businessId: "demo", name: "Paneer Tikka Masala", description: "Grilled paneer in a fragrant spiced gravy", price: 34900, category: "Mains", imageUrl: "", dietary: "veg", available: true, archived: false, stockQuantity: null, modifierGroupIds: [] },
+  { id: "demo-item-3", businessId: "demo", name: "Chicken Biryani", description: "Aromatic basmati rice, spices and chicken", price: 32900, category: "Rice & Biryani", imageUrl: "", dietary: "nonveg", available: true, archived: false, stockQuantity: null, modifierGroupIds: [] },
+  { id: "demo-item-4", businessId: "demo", name: "Garlic Butter Naan", description: "Freshly baked and brushed with garlic butter", price: 8900, category: "Breads", imageUrl: "", dietary: "veg", available: true, archived: false, stockQuantity: null, modifierGroupIds: [] },
+  { id: "demo-item-5", businessId: "demo", name: "Mango Lassi", description: "A sweet, creamy mango yogurt drink", price: 12900, category: "Drinks", imageUrl: "", dietary: "veg", available: false, archived: false, stockQuantity: null, modifierGroupIds: [] },
 ];
+
+export const demoModifierGroups: MenuModifierGroup[] = [
+  { id: "demo-group-size", name: "Size", minSelect: 1, maxSelect: 1, isActive: true, posSynced: false, itemCount: 0,
+    options: [
+      { id: "demo-option-regular", name: "Regular", priceCents: 0, isVeg: true, available: true, posSynced: false },
+      { id: "demo-option-large", name: "Large", priceCents: 6000, isVeg: true, available: true, posSynced: false },
+    ] },
+  { id: "demo-group-extras", name: "Extra toppings", minSelect: 0, maxSelect: 2, isActive: true, posSynced: false, itemCount: 0,
+    options: [
+      { id: "demo-option-cheese", name: "Extra cheese", priceCents: 4000, isVeg: true, available: true, posSynced: false },
+      { id: "demo-option-butter", name: "Extra butter", priceCents: 2000, isVeg: true, available: true, posSynced: false },
+    ] },
+];
+
 const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
 const noFeedback = { rating: null, review: "", feedbackAt: null, merchantResponse: "", merchantRespondedAt: null } as const;
 const noOffer = { offerId: null, offerCode: "", discount: 0 } as const;

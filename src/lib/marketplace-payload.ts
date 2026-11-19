@@ -7,7 +7,7 @@
  * this module free of `server-only` imports lets the same rules run in tests.
  */
 
-import type { Business, FeedbackSummary, ItemAnalytics, ItemAnalyticsRow, MenuItem, Offer, Order, OrderStatus, Review, ReviewInbox, ReviewTheme, RevenueSummary } from "@/lib/types";
+import type { Business, FeedbackSummary, ItemAnalytics, ItemAnalyticsRow, MenuItem, MenuModifierGroup, MenuModifierOption, Offer, Order, OrderStatus, Review, ReviewInbox, ReviewTheme, RevenueSummary } from "@/lib/types";
 
 export const FEEDBACK_WINDOW_DAYS = 30;
 export const MAX_REVIEW_CHARS = 500;
@@ -385,6 +385,53 @@ export function parseRemoteOffer(payload: unknown, businessId: string): Offer {
   return parseRemoteOfferRow(root.offer, businessId);
 }
 
+function numericId(value: unknown, label: string): string {
+  return String(integer(value, label, 1, 2_147_483_647));
+}
+
+/** One modifier option. Paired option prices are integer paise, never rupee floats. */
+export function parseRemoteMenuModifierOption(value: unknown): MenuModifierOption {
+  const row = object(value, "Marketplace modifier option");
+  return {
+    id: numericId(row.id, "modifier option id"),
+    name: text(row.name, "modifier option name", 60),
+    priceCents: integer(row.priceCents, "modifier option priceCents", 0, 1_000_000),
+    isVeg: bool(row.isVeg, "modifier option isVeg"),
+    available: bool(row.available, "modifier option available"),
+    posSynced: bool(row.posSynced, "modifier option posSynced"),
+  };
+}
+
+/** A group is also how the Merchant App expresses a one-of variant such as size. */
+export function parseRemoteMenuModifierGroup(value: unknown): MenuModifierGroup {
+  const row = object(value, "Marketplace modifier group");
+  const options = array(row.options, "modifier group options", 30).map(parseRemoteMenuModifierOption);
+  const minSelect = integer(row.minSelect, "modifier group minSelect", 0, 20);
+  const maxSelect = integer(row.maxSelect, "modifier group maxSelect", 1, 20);
+  if (maxSelect < minSelect) fail("modifier group maxSelect is invalid.");
+  return {
+    id: numericId(row.id, "modifier group id"),
+    name: text(row.name, "modifier group name", 60),
+    minSelect,
+    maxSelect,
+    isActive: bool(row.isActive, "modifier group isActive"),
+    options,
+    itemCount: row.itemCount === undefined ? undefined : integer(row.itemCount, "modifier group itemCount", 0, 100_000),
+    posSynced: bool(row.posSynced, "modifier group posSynced"),
+  };
+}
+
+export function parseRemoteMenuModifierGroups(payload: unknown): MenuModifierGroup[] {
+  const root = object(payload, "Marketplace modifier groups response");
+  const groups = root.modifierGroups === undefined ? [] : array(root.modifierGroups, "Marketplace modifier groups", 500);
+  return groups.map(parseRemoteMenuModifierGroup);
+}
+
+export function parseRemoteMenuModifierGroupResponse(payload: unknown): MenuModifierGroup {
+  const root = object(payload, "Marketplace modifier group response");
+  return parseRemoteMenuModifierGroup(root.group);
+}
+
 function parseRemoteMenuItem(value: unknown, businessId: string): MenuItem {
   const row = object(value, "Marketplace menu item");
   const dietary = optionalText(row.dietary, "menu dietary", 20, "unspecified");
@@ -406,6 +453,10 @@ function parseRemoteMenuItem(value: unknown, businessId: string): MenuItem {
     dietary,
     available: bool(row.available, "menu item available"),
     archived: bool(row.archived, "menu item archived"),
+    stockQuantity: nullableInteger(row.stockQuantity, "menu item stockQuantity", 0, 100_000),
+    modifierGroupIds: (row.modifierGroupIds === undefined ? [] : array(row.modifierGroupIds, "menu modifierGroupIds", 50))
+      .map((id) => numericId(id, "menu modifier group id")),
+    posSynced: row.posSynced === undefined ? undefined : bool(row.posSynced, "menu item posSynced"),
   };
 }
 

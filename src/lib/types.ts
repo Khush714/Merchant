@@ -16,9 +16,20 @@ export type StaffMember = {
   id: string; businessId: string; userId: string; email: string; role: StaffRole;
   status: "active" | "removed"; createdAt: string; updatedAt: string;
 };
+export type MenuModifierOption = {
+  id: string; name: string; priceCents: number; isVeg: boolean; available: boolean; posSynced: boolean;
+};
+export type MenuModifierGroup = {
+  id: string; name: string; minSelect: number; maxSelect: number; isActive: boolean;
+  options: MenuModifierOption[]; itemCount?: number; posSynced: boolean;
+};
 export type MenuItem = {
   id: string; businessId: string; name: string; description: string; price: number; category: string;
   imageUrl: string; dietary: string; available: boolean; archived: boolean;
+  /** Null means untracked; zero is sold out. Paired items take this from Marketplace. */
+  stockQuantity: number | null;
+  modifierGroupIds: string[];
+  posSynced?: boolean;
 };
 export type OrderItem = { id: string; name: string; quantity: number; unitPrice: number; lineTotal?: number; modifiers?: { name: string; quantity: number; priceCents: number }[] };
 export type Order = {
