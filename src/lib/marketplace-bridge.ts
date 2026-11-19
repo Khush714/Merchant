@@ -13,6 +13,7 @@ import { isLoopbackUrl } from "@/lib/urls";
 export {
   applyRemoteRestaurant,
   parseRemoteFeedbackInbox,
+  parseRemoteItemAnalytics,
   parseRemoteFeedbackReply,
   parseRemoteMenu,
   parseRemoteMenuItems,

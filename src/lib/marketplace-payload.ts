@@ -7,7 +7,7 @@
  * this module free of `server-only` imports lets the same rules run in tests.
  */
 
-import type { Business, FeedbackSummary, MenuItem, Offer, Order, OrderStatus, Review, ReviewInbox, ReviewTheme, RevenueSummary } from "@/lib/types";
+import type { Business, FeedbackSummary, ItemAnalytics, ItemAnalyticsRow, MenuItem, Offer, Order, OrderStatus, Review, ReviewInbox, ReviewTheme, RevenueSummary } from "@/lib/types";
 
 export const FEEDBACK_WINDOW_DAYS = 30;
 export const MAX_REVIEW_CHARS = 500;
@@ -313,6 +313,38 @@ export function parseRemoteRevenue(payload: unknown): RevenueSummary {
     netPaid: integer(source.netPaid, "netPaid", -Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER),
     completedOrders: integer(source.completedOrders, "completedOrders", 0, 100_000_000),
     paidSettlements: integer(source.paidSettlements, "paidSettlements", 0, 100_000_000),
+    currency: "INR",
+  };
+}
+
+/** Item sales are calculated by Marketplace; this only guards the transport shape. */
+export function parseRemoteItemAnalytics(payload: unknown): ItemAnalytics {
+  const root = object(payload, "Marketplace item analytics response");
+  if (root.ok !== true) fail("Marketplace item analytics request failed.");
+  const source = object(root.analytics, "Marketplace item analytics");
+  const from = source.from === null ? null : text(source.from, "item analytics from date", 10, REVENUE_DATE);
+  const to = source.to === null ? null : text(source.to, "item analytics to date", 10, REVENUE_DATE);
+  if ((from === null) !== (to === null)) fail("Marketplace item analytics range is incomplete.");
+  if (source.currency !== "INR") fail("Marketplace item analytics currency is unsupported.");
+  const items = array(source.items, "Marketplace item analytics rows", 100).map((value): ItemAnalyticsRow => {
+    const row = object(value, "Marketplace item analytics row");
+    const rawId = row.itemId;
+    if (rawId !== null && typeof rawId !== "string") fail("item analytics itemId is invalid.");
+    return {
+      itemId: rawId === null ? null : text(rawId, "item analytics itemId", 40, /^\d{1,12}$/),
+      name: text(row.name, "item analytics name", 120),
+      unitsSold: integer(row.unitsSold, "item analytics unitsSold", 0, 100_000_000),
+      grossSales: integer(row.grossSales, "item analytics grossSales", 0, Number.MAX_SAFE_INTEGER),
+      orders: integer(row.orders, "item analytics orders", 0, 100_000_000),
+    };
+  });
+  return {
+    from,
+    to,
+    items,
+    unitsSold: integer(source.unitsSold, "item analytics total unitsSold", 0, Number.MAX_SAFE_INTEGER),
+    grossSales: integer(source.grossSales, "item analytics total grossSales", 0, Number.MAX_SAFE_INTEGER),
+    itemsSold: integer(source.itemsSold, "item analytics itemsSold", 0, 100_000_000),
     currency: "INR",
   };
 }

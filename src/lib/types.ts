@@ -57,6 +57,24 @@ export type RevenueSummary = {
   paidSettlements: number;
   currency: "INR";
 };
+/** One menu item's sales in the selected range; money is in paise. */
+export type ItemAnalyticsRow = {
+  itemId: string | null;
+  name: string;
+  unitsSold: number;
+  grossSales: number;
+  orders: number;
+};
+/** Paired reports come from Marketplace; unpaired/demo reports use local order lines. */
+export type ItemAnalytics = {
+  from: string | null;
+  to: string | null;
+  items: ItemAnalyticsRow[];
+  unitsSold: number;
+  grossSales: number;
+  itemsSold: number;
+  currency: "INR";
+};
 export type Overview = {
   counts: Record<OrderStatus, number>;
   todaySales: number; todayOrders: number; completedToday: number; latestNewOrderId?: string | null;
