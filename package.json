@@ -22,8 +22,9 @@
     "test:items": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/item-analytics-test.mjs",
     "test:modifiers": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/menu-modifiers-test.mjs",
     "test:roles": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/role-permissions-test.mjs",
+    "test:compliance": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/compliance-validation-test.mjs",
     "audit:prune": "node scripts/prune-audit-logs.mjs",
-    "test": "npm run test:settlements && npm run test:provider-events && npm run test:urls && npm run test:config && node scripts/integration-test.mjs && npm run test:settlement-sync && npm run test:paired-flow && npm run test:revenue && npm run test:csv && npm run test:closure && npm run test:reviews && npm run test:items && npm run test:modifiers && npm run test:roles"
+    "test": "npm run test:settlements && npm run test:provider-events && npm run test:urls && npm run test:config && node scripts/integration-test.mjs && npm run test:settlement-sync && npm run test:paired-flow && npm run test:revenue && npm run test:csv && npm run test:closure && npm run test:reviews && npm run test:items && npm run test:modifiers && npm run test:roles && npm run test:compliance"
   },
   "dependencies": {
     "baseline-browser-mapping": "^2.11.33",

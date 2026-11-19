@@ -76,6 +76,16 @@ export function validateProductionConfig(env: NodeJS.ProcessEnv = process.env, o
   if (encryptionKey.length < MIN_SECRET) errors.push("MERCHANT_APP_TOKEN_ENCRYPTION_KEY must contain at least 32 characters.");
   else if (encryptionKey === pairingSecret) errors.push("MERCHANT_APP_TOKEN_ENCRYPTION_KEY must differ from MERCHANT_APP_INTEGRATION_SECRET.");
 
+  // Private compliance documents need both values; a half-configured pair is a silent failure.
+  const supabaseUrl = value(env, "SUPABASE_URL");
+  const supabaseKey = value(env, "SUPABASE_SERVICE_ROLE_KEY");
+  if (Boolean(supabaseUrl) !== Boolean(supabaseKey)) errors.push("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set together (merchant-compliance bucket).");
+  else if (supabaseUrl) {
+    const storage = httpUrl(supabaseUrl, "SUPABASE_URL", production, errors);
+    if (storage && (storage.pathname !== "/" || storage.search || storage.hash)) errors.push("SUPABASE_URL must be a bare origin without a path.");
+    if (supabaseKey.length < MIN_SECRET) errors.push("SUPABASE_SERVICE_ROLE_KEY must contain at least 32 characters.");
+  } else warnings.push("Private compliance document storage is not configured; uploads and downloads return 503.");
+
   // Optional integrations must be complete pairs; a half-configured pair is a silent failure.
   const upstashUrl = value(env, "UPSTASH_REDIS_REST_URL") || value(env, "KV_REST_API_URL");
   const upstashToken = value(env, "UPSTASH_REDIS_REST_TOKEN") || value(env, "KV_REST_API_TOKEN");

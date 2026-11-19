@@ -11,17 +11,18 @@ export type Permission =
   | "overview.read"
   | "settings.write"
   | "settlements.read"
+  | "compliance.read" | "compliance.write"
   | "staff.write"
   | "integration.write";
 
 export const ALL_PERMISSIONS: readonly Permission[] = [
   "orders.read", "orders.write", "menu.read", "menu.write", "menu.availability", "offers.read", "offers.write",
-  "feedback.write", "overview.read", "settings.write", "settlements.read", "staff.write", "integration.write",
+  "feedback.write", "overview.read", "settings.write", "settlements.read", "compliance.read", "compliance.write", "staff.write", "integration.write",
 ];
 
 export const ROLE_PERMISSIONS: Record<StaffRole, readonly Permission[]> = {
   // Managers run the outlet but cannot change who has access or rewire the Marketplace integration.
-  manager: ["orders.read", "orders.write", "menu.read", "menu.write", "menu.availability", "offers.read", "offers.write", "feedback.write", "overview.read", "settings.write", "settlements.read"],
+  manager: ["orders.read", "orders.write", "menu.read", "menu.write", "menu.availability", "offers.read", "offers.write", "feedback.write", "overview.read", "settings.write", "settlements.read", "compliance.read"],
   // Kitchen only works the order queue; it cannot see pricing, promotions or payouts.
   kitchen: ["orders.read", "orders.write", "overview.read"],
   // Servers handle orders and item availability, but cannot edit prices or archive items.
@@ -31,7 +32,7 @@ export const ROLE_PERMISSIONS: Record<StaffRole, readonly Permission[]> = {
 export const ROLE_LABELS: Record<AppRole, string> = { owner: "Owner", manager: "Manager", kitchen: "Kitchen", server: "Server" };
 export const ROLE_DESCRIPTIONS: Record<AppRole, string> = {
   owner: "Full access, including staff and Marketplace integration",
-  manager: "Orders, menu, offers, settings and payouts",
+  manager: "Orders, menu, offers, settings, payouts and compliance view",
   kitchen: "Order queue only",
   server: "Orders, item availability and customer replies",
 };

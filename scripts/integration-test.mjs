@@ -141,6 +141,25 @@ try {
   // Simulate the trusted review system in a disposable local database.
   sql(`update businesses set approval_status='approved' where id in (${shopIds()})`);
   for (const account of [restaurant, vendor]) { const opened = await request("/api/merchant/business", { method: "PATCH", cookie: account.cookie, body: { action: "availability", isOpen: true } }); assert.equal(opened.status, 200); }
+
+  // Compliance is advisory: owner-write, manager-read, and never a gate on orders.
+  assert.equal((await request("/api/merchant/compliance")).status, 401);
+  const complianceInitial = await request("/api/merchant/compliance", { cookie: restaurant.cookie });
+  assert.equal(complianceInitial.status, 200);
+  assert.equal(complianceInitial.data.compliance.agreement.accepted, false);
+  assert.ok(Array.isArray(complianceInitial.data.compliance.advisories));
+  const complianceSaved = await request("/api/merchant/compliance", { method: "PATCH", cookie: restaurant.cookie, body: { legalName: "Smoke Foods", gstin: "27AAPFU0939F1ZV", taxRegime: "regular", taxInclusive: true, defaultTaxRateBps: 500 } });
+  assert.equal(complianceSaved.status, 200);
+  assert.equal(complianceSaved.data.compliance.legalName, "Smoke Foods");
+  assert.equal((await request("/api/merchant/compliance", { method: "PATCH", cookie: restaurant.cookie, body: { gstin: "BAD" } })).status, 400);
+  const agreementCurrent = await request("/api/merchant/compliance/agreement", { cookie: restaurant.cookie });
+  const agreementAccepted = await request("/api/merchant/compliance/agreement", { method: "POST", cookie: restaurant.cookie, body: { version: agreementCurrent.data.agreement.version, contentHash: agreementCurrent.data.agreement.contentHash, accepted: true } });
+  assert.equal(agreementAccepted.status, 200);
+  assert.equal(agreementAccepted.data.agreement.accepted, true);
+  const payoutLocal = await request("/api/merchant/compliance/payout", { cookie: restaurant.cookie });
+  assert.equal(payoutLocal.status, 200);
+  assert.equal(payoutLocal.data.payout.available, false);
+  assert.equal((await request("/api/merchant/compliance/payout", { method: "POST", cookie: restaurant.cookie, body: { method: "upi", upiId: "smoke@bank" } })).status, 409);
   marketplace = await request("/api/marketplace"); assert.ok(marketplace.data.businesses.some((b) => b.id === restaurant.business.id)); assert.ok(marketplace.data.businesses.some((b) => b.id === vendor.business.id));
   const itemBody = { name: "Test meal", description: "", price: 25000, category: "Mains", imageUrl: "", dietary: "veg" };
   const disposableItem = await request("/api/merchant/menu", { method: "POST", cookie: restaurant.cookie, body: { ...itemBody, name: "Archive test" } });
@@ -167,6 +186,14 @@ try {
   const earlyFeedback = await request("/api/marketplace/feedback", { method: "POST", body: { orderId: placed.data.order.id, token: payload.idempotencyKey, rating: 5 } });
   assert.equal(earlyFeedback.status, 409);
   assert.equal((await transition(restaurant.cookie, placed.data.order.id, "ready", "completed")).status, 200);
+
+  const proforma = await request("/api/merchant/compliance/invoices", { method: "POST", cookie: restaurant.cookie, body: { action: "proforma", orderId: placed.data.order.id } });
+  assert.equal(proforma.status, 201);
+  assert.equal(proforma.data.invoice.source, "proforma");
+  const invoicePdf = await fetch(`${base}/api/merchant/compliance/invoices/${proforma.data.invoice.id}/pdf`, { headers: { cookie: restaurant.cookie } });
+  assert.equal(invoicePdf.status, 200);
+  assert.match(invoicePdf.headers.get("content-type") ?? "", /application\/pdf/);
+  assert.match(await invoicePdf.text(), /PRO FORMA INVOICE/);
   const wrongTokenFeedback = await request("/api/marketplace/feedback", { method: "POST", body: { orderId: placed.data.order.id, token: randomUUID(), rating: 5 } });
   assert.equal(wrongTokenFeedback.status, 404);
   const reviewed = await request("/api/marketplace/feedback", { method: "POST", body: { orderId: placed.data.order.id, token: payload.idempotencyKey, rating: 2, review: "Cold food" } });
@@ -232,6 +259,7 @@ try {
   assert.equal((await request("/api/merchant/staff", { cookie: reassignTarget.cookie })).status, 403);
   const staffAuth = await request("/api/auth", { cookie: reassignTarget.cookie });
   assert.equal(staffAuth.data.business.id, restaurant.business.id); assert.equal(staffAuth.data.role, "kitchen");
+  assert.equal((await request("/api/merchant/compliance", { cookie: reassignTarget.cookie })).status, 403);
   assert.equal((await request("/api/merchant/orders", { cookie: reassignTarget.cookie })).status, 200);
   assert.equal((await request("/api/merchant/menu", { method: "PATCH", cookie: reassignTarget.cookie, body: { action: "availability", id: rItem.data.item.id, available: false } })).status, 403);
   assert.equal((await request("/api/merchant/offers", { cookie: reassignTarget.cookie })).status, 403);
@@ -243,6 +271,10 @@ try {
   assert.equal((await request("/api/merchant/staff", { cookie: reassignTarget.cookie })).status, 403);
   const managerOffer = await request("/api/merchant/offers", { method: "POST", cookie: reassignTarget.cookie, body: offerBody("MGR10") });
   assert.equal(managerOffer.status, 201);
+
+  const managerCompliance = await request("/api/merchant/compliance", { cookie: reassignTarget.cookie });
+  assert.equal(managerCompliance.status, 200);
+  assert.equal((await request("/api/merchant/compliance", { method: "PATCH", cookie: reassignTarget.cookie, body: { legalName: "Not allowed" } })).status, 403);
   assert.equal((await request("/api/merchant/offers", { method: "DELETE", cookie: restaurant.cookie, body: { id: managerOffer.data.offer.id } })).status, 200);
   assert.equal((await request("/api/merchant/staff", { method: "PATCH", cookie: restaurant.cookie, body: { id: invited.data.staff.id, action: "remove" } })).status, 200);
   assert.equal((await request("/api/auth", { cookie: reassignTarget.cookie })).data.business, null);
@@ -455,8 +487,8 @@ try {
   assert.equal(multiOwnerReassignment.status, 200);
   assert.equal((await request("/api/auth", { cookie: ownerSession.cookie })).data.businesses.length, 3);
   assert.equal((await adminOwnerRequest({ businessId: vendor.business.id, email: emails[1] })).status, 200);
-  console.log("PASS: security headers, opt-in verification gate, registration, approval, owner recovery, marketplace, concurrency, feedback and replies, offers and server-side discounts, staff roles and permissions, multi-outlet ownership and session-scoped switching, signed courier/payment webhooks, sessions, password change, hashed audit trail, email verification, single-use password reset and authoritative settlement mirror");
+  console.log("PASS: security headers, opt-in verification gate, registration, approval, owner recovery, marketplace, concurrency, feedback and replies, offers and server-side discounts, staff roles and permissions, multi-outlet ownership and session-scoped switching, signed courier/payment webhooks, sessions, password change, hashed audit trail, email verification, single-use password reset and authoritative settlement mirror, compliance permissions and pro forma invoices");
 } finally {
-  try { sql(`begin; delete from audit_logs where actor_user_id in (${owners}) or business_id in (${shopIds()}) or actor_email_hash in (${emailHashes}) or (event in ('auth.verify_email','auth.reset_password') and outcome='failure'); delete from account_tokens where user_id in (${owners}); delete from order_events where order_id in (${testOrders()}); delete from order_items where order_id in (${testOrders()}); delete from provider_events where order_id in (${testOrders()}); delete from orders where business_id in (${shopIds()}); delete from offers where business_id in (${shopIds()}); delete from staff_members where business_id in (${shopIds()}); delete from menu_items where business_id in (${shopIds()}); delete from settlements where business_id in (${shopIds()}); delete from business_marketplace_links where business_id in (${shopIds()}); delete from sessions where user_id in (${owners}); delete from businesses where id in (${shopIds()}); delete from users where id in (${owners}); commit;`); }
+  try { sql(`begin; delete from audit_logs where actor_user_id in (${owners}) or business_id in (${shopIds()}) or actor_email_hash in (${emailHashes}) or (event in ('auth.verify_email','auth.reset_password') and outcome='failure'); delete from account_tokens where user_id in (${owners}); delete from order_events where order_id in (${testOrders()}); delete from order_items where order_id in (${testOrders()}); delete from provider_events where order_id in (${testOrders()}); delete from orders where business_id in (${shopIds()}); delete from offers where business_id in (${shopIds()}); delete from staff_members where business_id in (${shopIds()}); delete from menu_items where business_id in (${shopIds()}); delete from settlements where business_id in (${shopIds()}); delete from tax_invoices where business_id in (${shopIds()}); delete from compliance_documents where business_id in (${shopIds()}); delete from compliance_agreement_acceptances where business_id in (${shopIds()}); delete from business_compliance where business_id in (${shopIds()}); delete from settlements where business_id in (${shopIds()}); delete from business_marketplace_links where business_id in (${shopIds()}); delete from sessions where user_id in (${owners}); delete from businesses where id in (${shopIds()}); delete from users where id in (${owners}); commit;`); }
   catch (error) { console.error("Could not clean up disposable test records:", error.message); process.exitCode = 1; }
 }
