@@ -28,6 +28,11 @@ export function logError(event: string, error: unknown, fields: Fields = {}) {
   if (error instanceof Error) {
     const digest = (error as Error & { digest?: string }).digest;
     if (digest) detail.digest = digest;
+    // Drizzle wraps driver errors (auth, TLS, connection) in `cause`; without it
+    // the log only says "Failed query", hiding the actual failure reason.
+    const cause = (error as Error & { cause?: unknown }).cause;
+    if (cause instanceof Error) detail.cause = sanitizeMessage(cause.message);
+    else if (cause !== undefined) detail.cause = sanitizeMessage(String(cause));
     if (process.env.NODE_ENV !== "production" && error.stack) detail.stack = error.stack;
   }
   emit("error", event, { ...fields, error: detail });
