@@ -7,7 +7,7 @@
  * this module free of `server-only` imports lets the same rules run in tests.
  */
 
-import type { Business, FeedbackSummary, MenuItem, Offer, Order, OrderStatus, Review, ReviewInbox, ReviewTheme, RevenueSummary } from "@/lib/types";
+import type { Business, FeedbackSummary, ItemAnalytics, ItemAnalyticsRow, MenuItem, Offer, Order, OrderStatus, Review, ReviewInbox, ReviewTheme, RevenueSummary } from "@/lib/types";
 
 export const FEEDBACK_WINDOW_DAYS = 30;
 export const MAX_REVIEW_CHARS = 500;
@@ -173,6 +173,17 @@ export function parseRemoteFeedbackInbox(payload: unknown): ReviewInbox {
     };
   });
   return { reviews, summary: parseRemoteFeedbackSummary(object(root.summary, "Marketplace feedback summary")), themes };
+}
+
+/** Tiny change signal. Opaque tokens are compared, never interpreted. */
+export function parseRemoteSyncVersion(payload: unknown): { ok: true; orders: string; feedback: string } {
+  const root = object(payload, "Marketplace change signal response");
+  if (root.ok !== true) fail("Marketplace change signal request failed.");
+  return {
+    ok: true,
+    orders: text(root.orders, "orders change token", 512, /^[^\u0000-\u001f|]*(\|[^\u0000-\u001f|]*)*$/),
+    feedback: text(root.feedback, "feedback change token", 512, /^[^\u0000-\u001f|]*(\|[^\u0000-\u001f|]*)*$/),
+  };
 }
 
 /** Minimal acknowledgement parser for link checks, deletes and other write proxies. */

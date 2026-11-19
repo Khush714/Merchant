@@ -53,6 +53,11 @@ function demoRevenue(orders: Order[], range: RevenueRange): RevenueSummary {
     currency: "INR",
   };
 }
+/** How often the open workspace checks Marketplace's cheap change signal. */
+const SIGNAL_INTERVAL_MS = 1500;
+const HIDDEN_RETRY_MS = 5000;
+const MAX_SIGNAL_RETRY_MS = 20000;
+
 function subscribeToNetwork(callback: () => void) {
   window.addEventListener("online", callback);
   window.addEventListener("offline", callback);
@@ -74,12 +79,15 @@ export default function MerchantApp() {
   const [earningsTab, setEarningsTab] = useState<"overview" | "revenue">("overview"), [revenuePreset, setRevenuePreset] = useState<RevenuePreset>("1m"), [revenueRange, setRevenueRange] = useState<RevenueRange>(() => rangeForPreset("1m"));
   const [revenue, setRevenue] = useState<RevenueSummary | null>(null), [revenueBusy, setRevenueBusy] = useState(false), [revenueError, setRevenueError] = useState("");
   const [reviews, setReviews] = useState<Review[]>([]), [reviewSummary, setReviewSummary] = useState<FeedbackSummary>(emptyFeedback), [reviewThemes, setReviewThemes] = useState<ReviewTheme[]>([]), [reviewsBusy, setReviewsBusy] = useState(false), [reviewsError, setReviewsError] = useState(""), [reviewReplyBusy, setReviewReplyBusy] = useState("");
+  const [feedbackRefreshKey, setFeedbackRefreshKey] = useState(0);
   const lastNewCount = useRef<number | null>(null), lastNewId = useRef<string | null>(null), actionBusyRef = useRef<Set<string>>(new Set());
+  const versionRef = useRef<{ orders: string; feedback: string } | null>(null);
+  const reviewCountsRef = useRef<{ reviewCount: number; pendingReplies: number } | null>(null);
   const [actionBusy, setActionBusy] = useState<Record<string, boolean>>({});
 
   const activate = useCallback((data: AuthData) => {
     if (!data.user) return;
-    setDemo(false); setUser(data.user); setVerificationRequired(data.verificationRequired); setBusiness(data.business); setRole(data.role ?? "owner"); setOrders([]); setItems([]); setOverview(emptyOverview); setOffers([]); setOffersError(""); setReviews([]); setReviewSummary(emptyFeedback); setReviewThemes([]); setReviewsError(""); setStaff([]); setStaffError(""); setOfferFilter("active"); setPage("home"); setAccountOpen(false); setLinkInvalid(false); lastNewCount.current = null; lastNewId.current = null;
+    setDemo(false); setUser(data.user); setVerificationRequired(data.verificationRequired); setBusiness(data.business); setRole(data.role ?? "owner"); setOrders([]); setItems([]); setOverview(emptyOverview); setOffers([]); setOffersError(""); setReviews([]); setReviewSummary(emptyFeedback); setReviewThemes([]); setReviewsError(""); setStaff([]); setStaffError(""); setOfferFilter("active"); setPage("home"); setAccountOpen(false); setLinkInvalid(false); lastNewCount.current = null; lastNewId.current = null; versionRef.current = null; reviewCountsRef.current = null;
     if (!data.business || data.business.approvalStatus === "draft") setSetupOpen(true);
   }, []);
   // Proactively check the pairing token so a dead link is obvious before any sync call fails.
@@ -100,6 +108,7 @@ export default function MerchantApp() {
       setOrders(makeDemoOrders()); setItems(demoMenu); setOverview(emptyOverview); setOffers(makeDemoOffers(makeDemoOrders())); setReviews([]); setReviewSummary(emptyFeedback); setReviewThemes([]); setReviewsError("");
       setPage("home"); setAccountOpen(false); setProfileOpen(false); setSetupOpen(false); setOfferFilter("active");
       setSyncError(""); setMenuError(""); setOffersError(""); setLinkInvalid(false); setToast("Your session expired. Please sign in again.");
+      lastNewCount.current = null; lastNewId.current = null; versionRef.current = null; reviewCountsRef.current = null;
     };
     window.addEventListener(AUTH_EXPIRED_EVENT, reset);
     return () => window.removeEventListener(AUTH_EXPIRED_EVENT, reset);
@@ -125,15 +134,24 @@ export default function MerchantApp() {
   }, [checkLink]);
   useEffect(() => {
     if (demo || !business?.id || linkInvalid) return;
-    let stopped = false, failures = 0, timer: ReturnType<typeof setTimeout>;
-    const poll = async () => {
-      if (!navigator.onLine || document.hidden) { timer = setTimeout(poll, 30000); return; }
-      try {
-        const params = new URLSearchParams({ status: page === "orders" ? orderFilter : "active", page: String(page === "orders" ? orderPage : 1), limit: "20" });
-        if (page === "orders" && debouncedSearch) params.set("search", debouncedSearch);
-        if (page === "orders" && from) params.set("from", from);
-        if (page === "orders" && to) params.set("to", to);
-        const [overviewData, orderData] = await Promise.all([api<{ business: Business; overview: Overview }>("/api/merchant/overview"), api<{ orders: Order[]; hasMore: boolean }>(`/api/merchant/orders?${params}`)]);
+    let stopped = false, failures = 0, checking = false, forceNext = true, pendingForce = false;
+    let timer: ReturnType<typeof setTimeout>;
+    let inFlight: AbortController | null = null;
+
+    const loadFull = () => {
+      // A different filter/page is a new query even when the version is unchanged.
+      if (stopped || !navigator.onLine || document.hidden) { pendingForce = true; return; }
+      if (inFlight) { pendingForce = true; return; }
+      const controller = new AbortController();
+      inFlight = controller;
+      const params = new URLSearchParams({ status: page === "orders" ? orderFilter : "active", page: String(page === "orders" ? orderPage : 1), limit: "20" });
+      if (page === "orders" && debouncedSearch) params.set("search", debouncedSearch);
+      if (page === "orders" && from) params.set("from", from);
+      if (page === "orders" && to) params.set("to", to);
+      Promise.all([
+        api<{ business: Business; overview: Overview }>("/api/merchant/overview", { signal: controller.signal }),
+        api<{ orders: Order[]; hasMore: boolean }>(`/api/merchant/orders?${params}`, { signal: controller.signal }),
+      ]).then(([overviewData, orderData]) => {
         if (stopped) return;
         const newCount = overviewData.overview.counts.new;
         if (lastNewCount.current !== null && (newCount > lastNewCount.current || (newCount === lastNewCount.current && newCount > 0 && lastNewId.current && overviewData.overview.latestNewOrderId && lastNewId.current !== overviewData.overview.latestNewOrderId))) {
@@ -141,19 +159,74 @@ export default function MerchantApp() {
           if (soundEnabled) playAlert();
           if ("Notification" in window && Notification.permission === "granted") { try { new Notification("New order on Savour", { body: "Open your workspace to review it." }); } catch { /* Notifications may be unavailable in this browser. */ } }
         }
+        const nextFeedback = overviewData.overview.feedback;
+        if (nextFeedback) {
+          const counts = { reviewCount: nextFeedback.reviewCount, pendingReplies: nextFeedback.pendingReplies };
+          const previousCounts = reviewCountsRef.current;
+          if (!previousCounts || previousCounts.reviewCount !== counts.reviewCount || previousCounts.pendingReplies !== counts.pendingReplies) setFeedbackRefreshKey((n) => n + 1);
+          reviewCountsRef.current = counts;
+        }
         lastNewCount.current = newCount; lastNewId.current = overviewData.overview.latestNewOrderId || null; setBusiness((current) => current && current.id === overviewData.business.id && (!current.updatedAt || (overviewData.business.updatedAt && new Date(overviewData.business.updatedAt).getTime() >= new Date(current.updatedAt).getTime())) ? overviewData.business : current); setOverview(overviewData.overview); setOrders(orderData.orders); setHasMore(orderData.hasMore); setSyncError(""); failures = 0;
-      } catch (error) {
+      }).catch((error) => {
+        if (stopped || controller.signal.aborted) return;
         if (error instanceof Api401Error) {
           if (error.code === MARKETPLACE_LINK_INVALID) setLinkInvalid(true);
-          if (!stopped && !error.sessionExpired) setSyncError(error.message);
+          if (!error.sessionExpired) setSyncError(error.message);
           return;
         }
-        if (!stopped) { failures++; setSyncError("Couldn’t sync the latest data. We’ll retry automatically."); }
-      }
-      if (!stopped) timer = setTimeout(poll, Math.min(30000 * 2 ** failures, 120000));
+        failures++; forceNext = true; setSyncError("Couldn’t sync the latest data. We’ll retry automatically.");
+      }).finally(() => { if (inFlight === controller) inFlight = null; });
     };
-    void poll();
-    return () => { stopped = true; clearTimeout(timer); };
+
+    const check = async () => {
+      if (stopped) return;
+      if (checking) { pendingForce = true; return; }
+      if (!navigator.onLine || document.hidden) { timer = setTimeout(check, HIDDEN_RETRY_MS); return; }
+      checking = true;
+      let stopPolling = false;
+      try {
+        const signal = await api<{ ok: true; orders: string; feedback: string }>("/api/merchant/changes");
+        if (stopped) return;
+        const previous = versionRef.current;
+        const changed = !previous || previous.orders !== signal.orders || previous.feedback !== signal.feedback;
+        versionRef.current = { orders: signal.orders, feedback: signal.feedback };
+        const shouldLoad = changed || forceNext || pendingForce;
+        forceNext = false; pendingForce = false;
+        if (shouldLoad) loadFull();
+      } catch (error) {
+        if (stopped) return;
+        if (error instanceof Api401Error) {
+          if (error.code === MARKETPLACE_LINK_INVALID) setLinkInvalid(true);
+          if (!error.sessionExpired) setSyncError(error.message);
+          stopPolling = true;
+        } else {
+          failures++; setSyncError("Couldn’t sync the latest data. We’ll retry automatically.");
+        }
+      } finally { checking = false; }
+      if (!stopped && !stopPolling) timer = setTimeout(check, Math.min(SIGNAL_INTERVAL_MS * 2 ** failures, MAX_SIGNAL_RETRY_MS));
+    };
+
+    // Coming back to the tab, regaining the network, or reconnecting a listing
+    // must not wait for the next interval — refresh on the next frame.
+    const refreshNow = () => {
+      if (stopped) return;
+      forceNext = true;
+      clearTimeout(timer);
+      if (inFlight) { inFlight.abort(); inFlight = null; }
+      void check();
+    };
+    const onVisibility = () => { if (!document.hidden) refreshNow(); };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", refreshNow);
+    window.addEventListener("savour-marketplace-link-changed", refreshNow);
+    void check();
+    return () => {
+      stopped = true; clearTimeout(timer);
+      if (inFlight) inFlight.abort();
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", refreshNow);
+      window.removeEventListener("savour-marketplace-link-changed", refreshNow);
+    };
   }, [demo, business?.id, page, orderFilter, orderPage, debouncedSearch, from, to, refreshKey, soundEnabled, online, linkInvalid]);
 
   const vendor = business?.type === "vendor";
@@ -215,7 +288,7 @@ export default function MerchantApp() {
       })
       .finally(() => { if (!stopped) setReviewsBusy(false); });
     return () => { stopped = true; controller.abort(); };
-  }, [page, demo, business?.id, role, refreshKey, linkInvalid]);
+  }, [page, demo, business?.id, role, refreshKey, feedbackRefreshKey, linkInvalid]);
   const visibleNav = navItems.filter((item) => (!vendor || item.id !== "more") && (!item.permission || can(role, item.permission)));
   useEffect(() => {
     if (demo || !business?.id || !can(role, "staff.write")) return;

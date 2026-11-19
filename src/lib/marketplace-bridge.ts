@@ -23,6 +23,7 @@ export {
   parseRemoteOrders,
   parseRemoteRestaurantResponse,
   parseRemoteRevenue,
+  parseRemoteSyncVersion,
 } from "@/lib/marketplace-payload";
 
 const VERSION = "v1";
