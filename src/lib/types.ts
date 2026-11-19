@@ -45,6 +45,16 @@ export type SettlementSync = {
   message?: string;
   canRetry?: boolean;
 };
+/** Marketplace-owned totals for the selected revenue period; money is in paise. */
+export type RevenueSummary = {
+  from: string | null;
+  to: string | null;
+  grossSales: number;
+  netPaid: number;
+  completedOrders: number;
+  paidSettlements: number;
+  currency: "INR";
+};
 export type Overview = {
   counts: Record<OrderStatus, number>;
   todaySales: number; todayOrders: number; completedToday: number; latestNewOrderId?: string | null;

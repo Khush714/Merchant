@@ -2,15 +2,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { ArrowDownRight, ArrowRight, ArrowUpRight, BadgePercent, Bell, BellRing, Bike, BookOpen, Check, CheckCircle2, ChefHat, ChevronDown, ChevronLeft, ChevronRight, CircleDollarSign, Clock3, CreditCard, ExternalLink, Headphones, HelpCircle, Home, Info, KeyRound, LayoutGrid, Link2, LogOut, Mail, Menu as MenuIcon, MoreHorizontal, PackageCheck, Plus, Search, Settings2, ShieldCheck, ShoppingBag, Sparkles, Star, Store, Trash2, Users, UtensilsCrossed, WifiOff, X } from "lucide-react";
+import { ArrowDownRight, ArrowRight, ArrowUpRight, BadgePercent, Bell, BellRing, Bike, BookOpen, CalendarDays, Check, CheckCircle2, ChefHat, ChevronDown, ChevronLeft, ChevronRight, CircleDollarSign, Clock3, CreditCard, ExternalLink, Headphones, HelpCircle, Home, Info, KeyRound, LayoutGrid, Link2, LogOut, Mail, Menu as MenuIcon, MoreHorizontal, PackageCheck, Plus, Search, Settings2, ShieldCheck, ShoppingBag, Sparkles, Star, Store, Trash2, Users, UtensilsCrossed, WifiOff, X } from "lucide-react";
 import { AccountModal, Api401Error, AUTH_EXPIRED_EVENT, api, DecisionModal, FulfilmentModal, MenuModal, Modal, OfferModal, PasswordModal, SetupModal, type MenuInput } from "@/components/dialogs";
 import { BusinessSettings } from "@/components/business-settings";
 import { OrderCard, statusLabel, timeAgo, type OrderAction } from "@/components/order-card";
 import { demoBusiness, demoMenu, demoOverview, makeDemoOffers, makeDemoOrders } from "@/lib/demo";
 import { MARKETPLACE_LINK_INVALID } from "@/lib/marketplace-link-status";
 import { discountLabel, isOfferLive } from "@/lib/offers";
+import { normalizeRevenueRange, rangeForPreset, revenueRangeLabel, REVENUE_PRESETS, type RevenuePreset, type RevenueRange } from "@/lib/revenue";
 import { can, ROLE_DESCRIPTIONS, ROLE_LABELS, STAFF_ROLES, type AppRole, type Permission, type StaffRole } from "@/lib/roles";
-import { money, type AuthResponse, type AuthUser, type Business, type MenuItem, type Offer, type OfferInput, type Order, type OrderStatus, type Overview, type StaffMember } from "@/lib/types";
+import { money, type AuthResponse, type AuthUser, type Business, type MenuItem, type Offer, type OfferInput, type Order, type OrderStatus, type Overview, type RevenueSummary, type StaffMember } from "@/lib/types";
 
 type Page = "home" | "orders" | "menu" | "offers" | "staff" | "earnings" | "more";
 type User = AuthUser;
@@ -31,6 +32,24 @@ function initials(name: string) { return name.split(" ").filter(Boolean).slice(0
 function isInHours(business: Business) { if (!business.hoursEnabled) return true; const current = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date()); return business.opensAt <= business.closesAt ? current >= business.opensAt && current < business.closesAt : current >= business.opensAt || current < business.closesAt; }
 function playAlert() { try { const audio = new AudioContext(); const oscillator = audio.createOscillator(); const gain = audio.createGain(); oscillator.type = "sine"; oscillator.frequency.value = 740; gain.gain.setValueAtTime(0.08, audio.currentTime); gain.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + 0.35); oscillator.connect(gain); gain.connect(audio.destination); oscillator.start(); oscillator.stop(audio.currentTime + 0.35); oscillator.onended = () => { void audio.close(); }; } catch { /* Browser sound policies may block playback. */ } }
 function greeting() { const hour = new Date().getHours(); return hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening"; }
+function demoRevenue(orders: Order[], range: RevenueRange): RevenueSummary {
+  const normalized = normalizeRevenueRange(range.from, range.to) ?? { from: null, to: null, fromDate: null, toExclusiveDate: null };
+  const completed = orders.filter((order) => {
+    if (order.status !== "completed") return false;
+    const stamp = new Date(order.updatedAt).getTime();
+    return (!normalized.fromDate || stamp >= normalized.fromDate.getTime())
+      && (!normalized.toExclusiveDate || stamp < normalized.toExclusiveDate.getTime());
+  });
+  return {
+    from: normalized.from,
+    to: normalized.to,
+    grossSales: completed.reduce((sum, order) => sum + order.total, 0),
+    netPaid: 0,
+    completedOrders: completed.length,
+    paidSettlements: 0,
+    currency: "INR",
+  };
+}
 function subscribeToNetwork(callback: () => void) {
   window.addEventListener("online", callback);
   window.addEventListener("offline", callback);
@@ -49,6 +68,8 @@ export default function MerchantApp() {
   const [accountOpen, setAccountOpen] = useState(false), [profileOpen, setProfileOpen] = useState(false), [passwordOpen, setPasswordOpen] = useState(false), [setupOpen, setSetupOpen] = useState(false), [menuDialog, setMenuDialog] = useState<{ item: MenuItem | null } | null>(null), [decision, setDecision] = useState<{ order: Order; action: OrderAction } | null>(null), [fulfilmentDialog, setFulfilmentDialog] = useState<{ order: Order; fulfilment: "pickup" | "delivery" } | null>(null), [fulfilmentBusy, setFulfilmentBusy] = useState(""), [details, setDetails] = useState<Order | null>(null), [notificationsOpen, setNotificationsOpen] = useState(false), [helpOpen, setHelpOpen] = useState(false), [offerDialog, setOfferDialog] = useState<{ offer: Offer | null } | null>(null), [offerFilter, setOfferFilter] = useState<"active" | "archived">("active"), [offerBusy, setOfferBusy] = useState(""), [offersError, setOffersError] = useState(""), [staff, setStaff] = useState<StaffMember[]>([]), [staffEmail, setStaffEmail] = useState(""), [staffRole, setStaffRole] = useState<StaffRole>("server"), [staffBusy, setStaffBusy] = useState(""), [staffError, setStaffError] = useState("");
   const online = useSyncExternalStore(subscribeToNetwork, getNetworkStatus, () => true);
   const [syncError, setSyncError] = useState(""), [toast, setToast] = useState(""), [busyStore, setBusyStore] = useState(false), [busyItem, setBusyItem] = useState(""), [refreshKey, setRefreshKey] = useState(0), [soundEnabled, setSoundEnabled] = useState(() => typeof window !== "undefined" && localStorage.getItem("savour-sound") === "on"), [notificationPermission, setNotificationPermission] = useState(() => typeof Notification !== "undefined" ? Notification.permission : "default"), [menuError, setMenuError] = useState(""), [resendingVerification, setResendingVerification] = useState(false), [settlementBusy, setSettlementBusy] = useState(false), [feedbackBusy, setFeedbackBusy] = useState(""), [linkInvalid, setLinkInvalid] = useState(false);
+  const [earningsTab, setEarningsTab] = useState<"overview" | "revenue">("overview"), [revenuePreset, setRevenuePreset] = useState<RevenuePreset>("1m"), [revenueRange, setRevenueRange] = useState<RevenueRange>(() => rangeForPreset("1m"));
+  const [revenue, setRevenue] = useState<RevenueSummary | null>(null), [revenueBusy, setRevenueBusy] = useState(false), [revenueError, setRevenueError] = useState("");
   const lastNewCount = useRef<number | null>(null), lastNewId = useRef<string | null>(null), actionBusyRef = useRef<Set<string>>(new Set());
   const [actionBusy, setActionBusy] = useState<Record<string, boolean>>({});
 
@@ -141,6 +162,27 @@ export default function MerchantApp() {
     refunds: totals.refunds + settlement.refundAmount,
     adjustments: totals.adjustments + settlement.adjustmentAmount,
   }), { net: 0, gross: 0, fees: 0, refunds: 0, adjustments: 0 }), [paidSettlements]);
+  const revenueForView = demo ? demoRevenue(orders, revenueRange) : revenue;
+  useEffect(() => {
+    if (page !== "earnings" || earningsTab !== "revenue" || demo || !business?.id) return;
+    let stopped = false;
+    const controller = new AbortController();
+    const params = new URLSearchParams();
+    if (revenueRange.from && revenueRange.to) {
+      params.set("from", revenueRange.from);
+      params.set("to", revenueRange.to);
+    }
+    api<{ revenue: RevenueSummary }>(`/api/merchant/revenue?${params}`, { signal: controller.signal })
+      .then((data) => { if (!stopped) { setRevenue(data.revenue); setRevenueError(""); } })
+      .catch((error) => {
+        if (stopped) return;
+        if (error instanceof Api401Error && error.sessionExpired) return;
+        if (error instanceof Api401Error && error.code === MARKETPLACE_LINK_INVALID) setLinkInvalid(true);
+        setRevenueError(error instanceof Error ? error.message : "Could not load revenue.");
+      })
+      .finally(() => { if (!stopped) setRevenueBusy(false); });
+    return () => { stopped = true; controller.abort(); };
+  }, [page, earningsTab, demo, orders, business?.id, revenueRange, refreshKey]);
   const visibleNav = navItems.filter((item) => (!vendor || item.id !== "more") && (!item.permission || can(role, item.permission)));
   useEffect(() => {
     if (demo || !business?.id || !can(role, "staff.write")) return;
@@ -166,8 +208,28 @@ export default function MerchantApp() {
   }, [orders, demo, page, orderFilter, homeFilter, debouncedSearch, from, to]);
   const activeOrders = filteredOrders.slice(0, 4);
   const dateLabel = new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long" });
+  const revenueLabel = revenueRangeLabel(revenueRange);
   const name = business?.name || "Your business";
 
+  function chooseRevenuePreset(preset: RevenuePreset) {
+    setRevenuePreset(preset);
+    if (preset === "custom") return;
+    const next = rangeForPreset(preset);
+    if (next.from !== revenueRange.from || next.to !== revenueRange.to) {
+      if (!demo && business?.id) setRevenueBusy(true);
+      setRevenueRange(next);
+    }
+  }
+  function changeRevenueDate(side: "from" | "to", value: string) {
+    const current = revenueRange.from && revenueRange.to ? revenueRange : rangeForPreset("1m");
+    const next = side === "from"
+      ? { from: value, to: current.to && current.to < value ? value : current.to }
+      : { from: current.from && current.from > value ? value : current.from, to: value };
+    if (next.from === revenueRange.from && next.to === revenueRange.to) return;
+    setRevenuePreset("custom");
+    if (!demo && business?.id) setRevenueBusy(true);
+    setRevenueRange(next);
+  }
   async function toggleStore() {
     if (!business || busyStore) return;
     if (business.isOpen && activeCount > 0 && !window.confirm(`You have ${activeCount} active order${activeCount === 1 ? "" : "s"}. Closing stops new orders but does not cancel existing ones. Continue?`)) return;
@@ -440,7 +502,17 @@ export default function MerchantApp() {
           <div className="staff-list panel">{staff.length ? staff.map((member) => <div className="staff-row" key={member.id}><div className="staff-identity"><div className="staff-avatar">{initials(member.email)}</div><div><strong>{member.email}</strong><span>Added {timeAgo(member.createdAt)}</span></div></div><select aria-label={`Role for ${member.email}`} value={member.role} onChange={(event) => void changeStaffRole(member, event.target.value as StaffRole)} disabled={!!staffBusy}>{STAFF_ROLES.map((value) => <option value={value} key={value}>{ROLE_LABELS[value]}</option>)}</select><button className="icon-button small" aria-label={`Remove ${member.email}`} disabled={!!staffBusy} onClick={() => void removeStaff(member)}><Trash2 size={15} /></button></div>) : <Empty icon={<Users size={25} />} title="No staff yet" text="Add a teammate to share the workload." />}</div>
           <div className="staff-guide"><div className="staff-guide-head"><ShieldCheck size={17} /><strong>What each role can do</strong></div><div className="staff-guide-grid">{(["owner", ...STAFF_ROLES] as AppRole[]).map((value) => <div className="staff-guide-card" key={value}><strong>{ROLE_LABELS[value]}</strong><span>{ROLE_DESCRIPTIONS[value]}</span></div>)}</div></div>
         </>}
-        {page === "earnings" && <><div className="page-intro"><div><div className="eyebrow">THE BIGGER PICTURE <span>✳</span></div><h1>Earnings</h1><p>A clear view of your marketplace sales and settlements.</p></div><div className="earnings-actions">{!demo && can(role, "settlements.read") && <button className="btn btn-outline" disabled={settlementBusy} onClick={() => void refreshSettlements()}>{settlementBusy ? "Refreshing…" : "Refresh settlements"}</button>}<div className="date-chip"><Clock3 size={16} /> Today</div></div></div>{!demo && can(role, "settlements.read") && ["error", "throttled", "truncated"].includes(stats.settlementSync.status) && <div className="approval-banner"><Info size={18} /><div><strong>{stats.settlementSync.status === "truncated" ? "Settlement history is capped" : stats.settlementSync.status === "throttled" ? "Settlements were refreshed recently" : "Settlements could not be refreshed"}</strong><span>{stats.settlementSync.message ?? "Showing the last saved records."}</span></div>{stats.settlementSync.canRetry && <button disabled={settlementBusy} onClick={() => void refreshSettlements()}>{settlementBusy ? "Retrying…" : "Retry"}</button>}</div>}<div className="earnings-grid"><Metric icon={<CircleDollarSign size={21} />} tone="red" title="Gross sales today" value={money(stats.todaySales)} detail="Completed order value, before fees" /><Metric icon={<CheckCircle2 size={21} />} tone="green" title="Completed today" value={String(stats.completedToday)} detail="Orders marked completed" /><Metric icon={<CreditCard size={21} />} tone="blue" title="Net deposited" value={paidSettlements.length ? money(settlementTotals.net) : "—"} detail={paidSettlements.length ? "Confirmed in Marketplace settlements" : "No confirmed deposits yet"} /><Metric icon={<ArrowDownRight size={21} />} tone="amber" title="Settlements" value={String(paidSettlements.length).padStart(2, "0")} detail={stats.settlementSync.status === "error" ? "Showing last saved records" : stats.settlementSync.lastSyncedAt ? `Synced ${stats.settlementSync.lastSyncedAt.slice(11, 16)} UTC` : "Awaiting Marketplace payouts"} /></div><div className="earnings-columns"><section className="panel earnings-panel"><div className="section-heading"><div><h3>How earnings work</h3><p>Sales and settlement are not the same thing.</p></div><span className="settings-icon"><CircleDollarSign size={20} /></span></div><div className="earnings-line"><span>Gross completed order value today</span><strong>{money(stats.todaySales)}</strong></div><div className="earnings-line"><span>Settled gross</span><strong>{paidSettlements.length ? money(settlementTotals.gross) : "—"}</strong></div><div className="earnings-line"><span>Marketplace fees & adjustments</span><strong>{paidSettlements.length ? money(settlementTotals.fees + settlementTotals.adjustments) : "—"}</strong></div><div className="earnings-line"><span>Refunds</span><strong>{paidSettlements.length ? money(settlementTotals.refunds) : "—"}</strong></div><div className="earnings-line total"><span>Net deposited</span><strong>{paidSettlements.length ? money(settlementTotals.net) : "Not available"}</strong></div><div className="info-box">{stats.settlementSync.status === "error" ? stats.settlementSync.message : paidSettlements.length ? "Amounts come from authoritative Marketplace settlement records, not estimates." : demo ? "Sample payouts are not included. Connect a Marketplace listing to see real settlements." : "Marketplace will show confirmed deposits here after the first completed order is paid out."}</div></section><section className="panel earnings-panel"><div className="section-heading"><div><h3>Settlement history</h3><p>Net records mirrored from Marketplace payouts.</p></div></div>{stats.settlements.length ? stats.settlements.map((settlement) => <div className="earnings-line" key={settlement.id}><span>#{settlement.orderNumber ?? settlement.marketplaceOrderId} · {settlement.status} · {new Date(settlement.paidAt ?? settlement.createdAt).toISOString().slice(0, 10)}</span><strong>{money(settlement.netAmount)}</strong></div>) : <div className="settlement-empty"><CreditCard size={24} /><strong>No settlement records yet</strong><span>{demo ? "Connect a Marketplace listing to see real payouts." : "Confirmed deposits will appear after Marketplace settles an order."}</span></div>}</section></div></>}
+        {page === "earnings" && <><div className="page-intro"><div><div className="eyebrow">THE BIGGER PICTURE <span>✳</span></div><h1>Earnings</h1><p>A clear view of your marketplace sales and settlements.</p></div><div className="earnings-actions">{!demo && can(role, "settlements.read") && <button className="btn btn-outline" disabled={settlementBusy} onClick={() => void refreshSettlements()}>{settlementBusy ? "Refreshing…" : "Refresh settlements"}</button>}<div className="date-chip"><Clock3 size={16} /> {earningsTab === "revenue" ? revenueLabel : "Today"}</div></div></div>
+        <div className="earnings-tabs" role="tablist" aria-label="Earnings views"><button role="tab" aria-selected={earningsTab === "overview"} className={earningsTab === "overview" ? "selected" : ""} onClick={() => setEarningsTab("overview")}>Overview</button><button role="tab" aria-selected={earningsTab === "revenue"} className={earningsTab === "revenue" ? "selected" : ""} onClick={() => setEarningsTab("revenue")}>Revenue</button></div>
+        {earningsTab === "overview" && <>{!demo && can(role, "settlements.read") && ["error", "throttled", "truncated"].includes(stats.settlementSync.status) && <div className="approval-banner"><Info size={18} /><div><strong>{stats.settlementSync.status === "truncated" ? "Settlement history is capped" : stats.settlementSync.status === "throttled" ? "Settlements were refreshed recently" : "Settlements could not be refreshed"}</strong><span>{stats.settlementSync.message ?? "Showing the last saved records."}</span></div>{stats.settlementSync.canRetry && <button disabled={settlementBusy} onClick={() => void refreshSettlements()}>{settlementBusy ? "Retrying…" : "Retry"}</button>}</div>}<div className="earnings-grid"><Metric icon={<CircleDollarSign size={21} />} tone="red" title="Gross sales today" value={money(stats.todaySales)} detail="Completed order value, before fees" /><Metric icon={<CheckCircle2 size={21} />} tone="green" title="Completed today" value={String(stats.completedToday)} detail="Orders marked completed" /><Metric icon={<CreditCard size={21} />} tone="blue" title="Net deposited" value={paidSettlements.length ? money(settlementTotals.net) : "—"} detail={paidSettlements.length ? "Confirmed in Marketplace settlements" : "No confirmed deposits yet"} /><Metric icon={<ArrowDownRight size={21} />} tone="amber" title="Settlements" value={String(paidSettlements.length).padStart(2, "0")} detail={stats.settlementSync.status === "error" ? "Showing last saved records" : stats.settlementSync.lastSyncedAt ? `Synced ${stats.settlementSync.lastSyncedAt.slice(11, 16)} UTC` : "Awaiting Marketplace payouts"} /></div><div className="earnings-columns"><section className="panel earnings-panel"><div className="section-heading"><div><h3>How earnings work</h3><p>Sales and settlement are not the same thing.</p></div><span className="settings-icon"><CircleDollarSign size={20} /></span></div><div className="earnings-line"><span>Gross completed order value today</span><strong>{money(stats.todaySales)}</strong></div><div className="earnings-line"><span>Settled gross</span><strong>{paidSettlements.length ? money(settlementTotals.gross) : "—"}</strong></div><div className="earnings-line"><span>Marketplace fees & adjustments</span><strong>{paidSettlements.length ? money(settlementTotals.fees + settlementTotals.adjustments) : "—"}</strong></div><div className="earnings-line"><span>Refunds</span><strong>{paidSettlements.length ? money(settlementTotals.refunds) : "—"}</strong></div><div className="earnings-line total"><span>Net deposited</span><strong>{paidSettlements.length ? money(settlementTotals.net) : "Not available"}</strong></div><div className="info-box">{stats.settlementSync.status === "error" ? stats.settlementSync.message : paidSettlements.length ? "Amounts come from authoritative Marketplace settlement records, not estimates." : demo ? "Sample payouts are not included. Connect a Marketplace listing to see real settlements." : "Marketplace will show confirmed deposits here after the first completed order is paid out."}</div></section><section className="panel earnings-panel"><div className="section-heading"><div><h3>Settlement history</h3><p>Net records mirrored from Marketplace payouts.</p></div></div>{stats.settlements.length ? stats.settlements.map((settlement) => <div className="earnings-line" key={settlement.id}><span>#{settlement.orderNumber ?? settlement.marketplaceOrderId} · {settlement.status} · {new Date(settlement.paidAt ?? settlement.createdAt).toISOString().slice(0, 10)}</span><strong>{money(settlement.netAmount)}</strong></div>) : <div className="settlement-empty"><CreditCard size={24} /><strong>No settlement records yet</strong><span>{demo ? "Connect a Marketplace listing to see real payouts." : "Confirmed deposits will appear after Marketplace settles an order."}</span></div>}</section></div></>}
+        {earningsTab === "revenue" && <>
+          {revenueError && <div className="approval-banner"><Info size={18} /> {revenueError}</div>}
+          <div className="revenue-toolbar"><div className="revenue-presets">{REVENUE_PRESETS.map((preset) => <button key={preset.id} className={revenuePreset === preset.id ? "selected" : ""} onClick={() => chooseRevenuePreset(preset.id)}>{preset.label}</button>)}<button className={revenuePreset === "custom" ? "selected" : ""} onClick={() => chooseRevenuePreset("custom")}>Custom</button></div><div className="revenue-custom" suppressHydrationWarning><CalendarDays size={16} /><label>From <input aria-label="Revenue from date" type="date" value={revenueRange.from ?? ""} max={revenueRange.to ?? undefined} onChange={(event) => changeRevenueDate("from", event.target.value)} /></label><span>to</span><label>To <input aria-label="Revenue to date" type="date" value={revenueRange.to ?? ""} min={revenueRange.from ?? undefined} onChange={(event) => changeRevenueDate("to", event.target.value)} /></label></div>{revenueBusy && !demo && <span className="revenue-updating">Updating…</span>}</div>
+          <div className="panel revenue-hero"><div className="revenue-primary"><span>Total revenue</span><strong>{revenueForView ? money(revenueForView.grossSales) : "—"}</strong><small suppressHydrationWarning>{revenueLabel} · gross completed sales, before fees</small></div><div className="revenue-divider" /><div className="revenue-secondary"><span>Net paid</span><strong>{revenueForView ? money(revenueForView.netPaid) : "—"}</strong><small>Confirmed Marketplace deposits in the same period</small></div></div>
+          <div className="earnings-grid revenue-stats"><Metric icon={<CheckCircle2 size={21} />} tone="green" title="Completed orders" value={revenueForView ? String(revenueForView.completedOrders) : "—"} detail="Orders completed in this range" /><Metric icon={<CalendarDays size={21} />} tone="blue" title="Average order value" value={revenueForView && revenueForView.completedOrders ? money(Math.round(revenueForView.grossSales / revenueForView.completedOrders)) : "—"} detail="Gross sales ÷ completed orders" /><Metric icon={<CreditCard size={21} />} tone="red" title="Paid settlements" value={revenueForView ? String(revenueForView.paidSettlements).padStart(2, "0") : "—"} detail="Confirmed deposits in this range" /></div>
+          <div className="info-box">{demo ? "Demo revenue is calculated from completed sample orders. Connect a Marketplace listing to see real totals." : "Revenue is calculated by Marketplace from completed orders and confirmed payments, not from the settlement records shown in Overview."}</div>
+        </>}
+      </>}
         {page === "more" && <><div className="page-intro"><div><div className="eyebrow">MAKE IT YOURS <span>✳</span></div><h1>Business settings</h1><p>Manage the details that keep your business running.</p></div>{user && <button className="btn btn-outline" onClick={signOut}><LogOut size={16} /> Sign out</button>}</div>{!can(role, "settings.write") ? <Empty icon={<ShieldCheck size={25} />} title="Read-only access" text={`Your ${ROLE_LABELS[role].toLowerCase()} role cannot change business settings.`} /> : business ? <BusinessSettings key={business.id} business={business} onSave={saveSettings} /> : <Empty icon={<Store size={25} />} title="Finish setting up" text="Add your business details to manage your workspace." action={<button className="btn btn-primary" onClick={() => setSetupOpen(true)}>Continue setup</button>} />}</>}
         <footer className="page-footer"><span>Made for the people behind the plate <span>♥</span></span><span>© Savour Partner</span></footer>
       </div>

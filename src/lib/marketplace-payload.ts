@@ -7,7 +7,7 @@
  * this module free of `server-only` imports lets the same rules run in tests.
  */
 
-import type { Business, FeedbackSummary, MenuItem, Offer, Order, OrderStatus } from "@/lib/types";
+import type { Business, FeedbackSummary, MenuItem, Offer, Order, OrderStatus, RevenueSummary } from "@/lib/types";
 
 export const FEEDBACK_WINDOW_DAYS = 30;
 export const MAX_REVIEW_CHARS = 500;
@@ -233,6 +233,28 @@ export function parseRemoteOverview(payload: unknown): {
       latestNewOrderId: typeof latest === "string" ? text(latest, "latestNewOrderId", 128) : null,
       feedback: parseRemoteFeedbackSummary(source.feedback),
     },
+  };
+}
+
+const REVENUE_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Revenue totals are calculated by Marketplace; this only guards the transport shape. */
+export function parseRemoteRevenue(payload: unknown): RevenueSummary {
+  const root = object(payload, "Marketplace revenue response");
+  if (root.ok !== true) fail("Marketplace revenue request failed.");
+  const source = object(root.revenue, "Marketplace revenue totals");
+  const from = source.from === null ? null : text(source.from, "revenue from date", 10, REVENUE_DATE);
+  const to = source.to === null ? null : text(source.to, "revenue to date", 10, REVENUE_DATE);
+  if ((from === null) !== (to === null)) fail("Marketplace revenue range is incomplete.");
+  if (source.currency !== "INR") fail("Marketplace revenue currency is unsupported.");
+  return {
+    from,
+    to,
+    grossSales: integer(source.grossSales, "grossSales", 0, Number.MAX_SAFE_INTEGER),
+    netPaid: integer(source.netPaid, "netPaid", -Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER),
+    completedOrders: integer(source.completedOrders, "completedOrders", 0, 100_000_000),
+    paidSettlements: integer(source.paidSettlements, "paidSettlements", 0, 100_000_000),
+    currency: "INR",
   };
 }
 
