@@ -7,7 +7,7 @@
  * this module free of `server-only` imports lets the same rules run in tests.
  */
 
-import type { Business, FeedbackSummary, ItemAnalytics, ItemAnalyticsRow, MenuItem, Offer, Order, OrderStatus, Review, ReviewInbox, ReviewTheme, RevenueSummary } from "@/lib/types";
+import type { Business, FeedbackSummary, MenuItem, Offer, Order, OrderStatus, Review, ReviewInbox, ReviewTheme, RevenueSummary } from "@/lib/types";
 
 export const FEEDBACK_WINDOW_DAYS = 30;
 export const MAX_REVIEW_CHARS = 500;
