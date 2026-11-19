@@ -96,22 +96,36 @@
     {
       "idx": 13,
       "version": "7",
-      "when": 1795074124441,
+      "when": 1796500000000,
       "tag": "0013_temporary_closure",
       "breakpoints": true
     },
     {
       "idx": 14,
       "version": "7",
-      "when": 1795315200000,
+      "when": 1796500000001,
       "tag": "0014_menu_modifiers_stock",
       "breakpoints": true
     },
     {
       "idx": 15,
       "version": "7",
-      "when": 1795315200001,
+      "when": 1796500000002,
       "tag": "0015_multi_outlet",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1796500000003,
+      "tag": "0016_service_config",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1796500000004,
+      "tag": "0017_supabase_rls",
       "breakpoints": true
     }
   ]

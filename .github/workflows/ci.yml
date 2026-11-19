@@ -63,6 +63,12 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Check Supabase/Drizzle migration parity
+        run: npm run test:supabase
+
+      - name: Order tab query/cache checks
+        run: npm run test:order-query
+
       - name: Apply schema migrations
         run: |
           for file in drizzle/*.sql; do

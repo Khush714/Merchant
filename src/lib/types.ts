@@ -1,4 +1,7 @@
 import type { AppRole, StaffRole } from "@/lib/roles";
+import type { DayPart, DeliveryZone, ServicePoint, WeeklyDayHours } from "@/lib/service-config";
+
+export type { DayPart, DeliveryZone, ServicePoint, WeeklyDayHours } from "@/lib/service-config";
 
 export type AuthUser = { id: string; email: string; emailVerified: boolean };
 export type BusinessType = "restaurant" | "vendor";
@@ -10,6 +13,9 @@ export type Business = {
   opensAt: string; closesAt: string; updatedAt?: string;
   /** Optional overlays on isOpen; older demo and cached records may omit them. */
   closureReason?: string; closureUntil?: string | null; scheduledLeaves?: { date: string; reason: string }[];
+  /** Optional map pin, service circles, weekly schedule and time-slot menus. Older rows omit them. */
+  latitude?: number | null; longitude?: number | null; deliveryRadiusMeters?: number;
+  deliveryZones?: DeliveryZone[]; weeklyHours?: WeeklyDayHours[]; dayParts?: DayPart[];
 };
 /** Outlet shown in the switcher. `role` is specific to this outlet, not to the account. */
 export type BusinessOption = {
@@ -97,6 +103,32 @@ export type ItemAnalytics = {
   grossSales: number;
   itemsSold: number;
   currency: "INR";
+};
+/** Order-level analytics for a range; money is in paise. Placement and completion dates are deliberately distinct. */
+export type AdvancedKpis = {
+  ordersPlaced: number;
+  completionRate: number;
+  discountsGiven: number;
+  failedPayments: number;
+};
+export type AnalyticsDailyRow = { date: string; orders: number; completed: number; grossSales: number; discounts: number };
+export type AnalyticsGroupRow = { label: string; orders: number; completed: number; grossSales: number };
+export type AnalyticsOfferRow = { code: string; redemptions: number; discountGiven: number; grossSales: number };
+/** Paired outlets keep order-level breakdowns in Marketplace; only authoritative totals are returned. */
+export type AdvancedAnalytics = {
+  from: string | null;
+  to: string | null;
+  currency: "INR";
+  source: "local" | "marketplace";
+  /** Same definition as the Revenue tab (completion date), so the two views agree. */
+  summary: RevenueSummary;
+  kpis: AdvancedKpis | null;
+  daily: AnalyticsDailyRow[];
+  fulfilment: AnalyticsGroupRow[];
+  payments: AnalyticsGroupRow[];
+  offers: AnalyticsOfferRow[];
+  notice?: string;
+  truncated?: boolean;
 };
 export type Overview = {
   counts: Record<OrderStatus, number>;

@@ -7,6 +7,7 @@ import { and, asc, desc, eq, lt, notInArray } from "drizzle-orm";
 import { db } from "@/db";
 import { auditLogs, businesses, sessions, staffMembers, users } from "@/db/schema";
 import { can, isStaffRole, type AppRole, type Permission } from "@/lib/roles";
+import { isWithinBusinessHours } from "@/lib/service-config";
 import { logError, warn } from "@/lib/telemetry";
 
 const scrypt = promisify(scryptCallback);
@@ -351,8 +352,6 @@ export async function readJson<T = Record<string, any>>(request: NextRequest, ma
   catch { throw new ApiError("Invalid JSON request body.", 400); }
 }
 export function textValue(value: unknown, max = 200) { return typeof value === "string" ? value.trim().slice(0, max) : ""; }
-export function withinOperatingHours(business: { hoursEnabled: boolean; opensAt: string; closesAt: string }) {
-  if (!business.hoursEnabled) return true;
-  const current = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date());
-  return business.opensAt <= business.closesAt ? current >= business.opensAt && current < business.closesAt : current >= business.opensAt || current < business.closesAt;
+export function withinOperatingHours(business: { hoursEnabled: boolean; opensAt: string; closesAt: string; weeklyHours?: { day: number; enabled: boolean; opensAt: string; closesAt: string }[] | null }, now = new Date()) {
+  return isWithinBusinessHours(business, now);
 }

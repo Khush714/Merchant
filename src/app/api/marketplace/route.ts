@@ -4,6 +4,7 @@ import { db } from "@/db";
 import { businesses, businessMarketplaceLinks, menuItems, offers, orderEvents, orderItems, orders } from "@/db/schema";
 import { feedbackDto } from "@/lib/feedback";
 import { calculateDiscount, isOfferLive, publicOfferDto } from "@/lib/offers";
+import { menuForDayPart, parseDeliveryPoint, withinServiceArea } from "@/lib/service-config";
 import { ApiError, BODY_LIMITS, fail, rateLimit, readJson, sameOrigin, sha256, textValue, withinOperatingHours } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
@@ -23,18 +24,20 @@ export async function GET(request: NextRequest) {
     if (businessId) {
       if (!uuid.test(businessId)) throw new ApiError("Business not found.", 404);
       const [business] = await db.select().from(businesses).where(and(eq(businesses.id, businessId), eq(businesses.approvalStatus, "approved"), eq(businesses.isOpen, true))).limit(1);
-      if (!business || !withinOperatingHours(business)) throw new ApiError("This business is not currently accepting orders.", 404);
-      const items = await db.select().from(menuItems).where(and(eq(menuItems.businessId, business.id), eq(menuItems.available, true), eq(menuItems.archived, false))).orderBy(asc(menuItems.category), asc(menuItems.name)).limit(500);
+      const now = new Date();
+      if (!business || !withinOperatingHours(business, now)) throw new ApiError("This business is not currently accepting orders.", 404);
+      const allItems = await db.select().from(menuItems).where(and(eq(menuItems.businessId, business.id), eq(menuItems.available, true), eq(menuItems.archived, false))).orderBy(asc(menuItems.category), asc(menuItems.name)).limit(500);
+      const { items, dayPart } = menuForDayPart(allItems, business, now);
       const rows = await db.select({ offer: offers, redemptions: sql<number>`count(${orders.id})::int` })
         .from(offers)
         .leftJoin(orders, eq(orders.offerId, offers.id))
         .where(and(eq(offers.businessId, business.id), eq(offers.active, true), eq(offers.archived, false)))
         .groupBy(offers.id).orderBy(asc(offers.createdAt)).limit(50);
       const visibleOffers = rows.filter((row) => isOfferLive(row.offer) && (row.offer.usageLimit === null || row.redemptions < row.offer.usageLimit)).map((row) => publicOfferDto(row.offer));
-      return NextResponse.json({ business: { id: business.id, name: business.name, category: business.category, address: business.address, pickupEnabled: business.pickupEnabled, deliveryEnabled: business.deliveryEnabled }, items, offers: visibleOffers });
+      return NextResponse.json({ business: { id: business.id, name: business.name, category: business.category, address: business.address, pickupEnabled: business.pickupEnabled, deliveryEnabled: business.deliveryEnabled, dayPart: dayPart ? { id: dayPart.id, name: dayPart.name, opensAt: dayPart.opensAt, closesAt: dayPart.closesAt } : null }, items, offers: visibleOffers });
     }
     const rows = await db.select().from(businesses).where(and(eq(businesses.approvalStatus, "approved"), eq(businesses.isOpen, true))).orderBy(asc(businesses.name)).limit(100);
-    return NextResponse.json({ businesses: rows.filter(withinOperatingHours).map((b) => ({ id: b.id, name: b.name, category: b.category, address: b.address, type: b.type })) });
+    return NextResponse.json({ businesses: rows.filter((business) => withinOperatingHours(business)).map((b) => ({ id: b.id, name: b.name, category: b.category, address: b.address, type: b.type })) });
   } catch (error) { return fail(error, request); }
 }
 export async function POST(request: NextRequest) {
@@ -46,10 +49,14 @@ export async function POST(request: NextRequest) {
     const [marketplaceLink] = await db.select({ id: businessMarketplaceLinks.id }).from(businessMarketplaceLinks).where(eq(businessMarketplaceLinks.businessId, businessId)).limit(1);
     if (marketplaceLink) throw new ApiError("This business is connected to Savour Marketplace. Place customer orders through the Marketplace so the merchant receives the single canonical order.", 409);
     if (fulfilment === "delivery" && !deliveryAddress) throw new ApiError("A delivery address is required.");
+    let deliveryPoint;
+    try { deliveryPoint = parseDeliveryPoint(body); }
+    catch (error) { throw new ApiError(error instanceof Error ? error.message : "Invalid delivery location.", 400); }
+    const now = new Date();
     const lines: { id: string; quantity: number }[] = body.items.map((line: { id?: unknown; quantity?: unknown }) => ({ id: textValue(line.id, 50), quantity: Number(line.quantity) }));
     if (lines.some((line) => !uuid.test(line.id) || !Number.isInteger(line.quantity) || line.quantity < 1 || line.quantity > 20) || new Set(lines.map((line) => line.id)).size !== lines.length) throw new ApiError("Invalid order items.");
     lines.sort((a, b) => a.id.localeCompare(b.id));
-    const idempotencyHash = sha256(token), requestHash = sha256(JSON.stringify({ businessId, customerName, customerNote, fulfilment, deliveryAddress, lines, offerCode }));
+    const idempotencyHash = sha256(token), requestHash = sha256(JSON.stringify({ businessId, customerName, customerNote, fulfilment, deliveryAddress, deliveryPoint, lines, offerCode }));
     const order = await db.transaction(async (tx) => {
       const [business] = await tx.select().from(businesses).where(eq(businesses.id, businessId)).for("update");
       if (!business) throw new ApiError("Business not found.", 404);
@@ -58,10 +65,15 @@ export async function POST(request: NextRequest) {
         if (existing.requestHash !== requestHash) throw new ApiError("This order key was already used for a different order.", 409);
         return existing;
       }
-      if (business.approvalStatus !== "approved" || !business.isOpen || !withinOperatingHours(business)) throw new ApiError("This business is not currently accepting orders.", 409);
+      if (business.approvalStatus !== "approved" || !business.isOpen || !withinOperatingHours(business, now)) throw new ApiError("This business is not currently accepting orders.", 409);
       if ((fulfilment === "pickup" && !business.pickupEnabled) || (fulfilment === "delivery" && !business.deliveryEnabled)) throw new ApiError("This fulfilment method is not available.", 409);
-      const items = await tx.select().from(menuItems).where(and(eq(menuItems.businessId, business.id), inArray(menuItems.id, lines.map((line) => line.id)), eq(menuItems.available, true), eq(menuItems.archived, false))).for("update");
-      if (items.length !== lines.length) throw new ApiError("One or more items are no longer available. Refresh the menu.", 409);
+      if (fulfilment === "delivery" && deliveryPoint) {
+        const area = withinServiceArea(deliveryPoint, business);
+        if (!area.allowed) throw new ApiError("This delivery address is outside our service area. Check the pin on the store map and try again.", 409);
+      }
+      const offered = await tx.select().from(menuItems).where(and(eq(menuItems.businessId, business.id), inArray(menuItems.id, lines.map((line) => line.id)), eq(menuItems.available, true), eq(menuItems.archived, false))).for("update");
+      const items = menuForDayPart(offered, business, now).items;
+      if (items.length !== lines.length) throw new ApiError("One or more items are no longer available for this time slot. Refresh the menu.", 409);
       const snapshots = lines.map((line) => { const item = items.find((i) => i.id === line.id)!; return { menuItemId: item.id, name: item.name, unitPrice: item.price, quantity: line.quantity }; });
       const subtotal = snapshots.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
       if (!Number.isSafeInteger(subtotal) || subtotal > 2_147_483_647) throw new ApiError("Order total is too large. Please reduce the quantity.");

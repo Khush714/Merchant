@@ -54,8 +54,22 @@ async function migrate() {
       CREATE UNIQUE INDEX IF NOT EXISTS unique_marketplace_restaurant_idx 
       ON business_marketplace_links (marketplace_restaurant_id);
     `);
-    
-    console.log("✅ Success! Table business_marketplace_links and unique index are ready.");
+
+    // Match the migrations: no Data API role may read this table directly.
+    console.log("Applying row-level security and revoking Data API roles...");
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN CREATE ROLE anon NOLOGIN NOINHERIT; END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN CREATE ROLE authenticated NOLOGIN NOINHERIT; END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN CREATE ROLE service_role NOLOGIN NOINHERIT BYPASSRLS; END IF;
+      END
+      $$;
+      ALTER TABLE business_marketplace_links ENABLE ROW LEVEL SECURITY;
+      REVOKE ALL ON TABLE business_marketplace_links FROM PUBLIC, anon, authenticated, service_role;
+    `);
+
+    console.log("✅ Success! Table business_marketplace_links, unique index and RLS are ready.");
   } finally {
     client.release();
     await pool.end();

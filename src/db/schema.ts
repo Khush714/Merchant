@@ -1,4 +1,6 @@
-import { boolean, index, integer, jsonb, pgTable, primaryKey, serial, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { boolean, doublePrecision, index, integer, jsonb, pgTable, primaryKey, serial, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import type { DayPart, DeliveryZone, WeeklyDayHours } from "@/lib/service-config";
+import { DEFAULT_DELIVERY_RADIUS_METERS } from "@/lib/service-config";
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -86,6 +88,16 @@ export const businesses = pgTable("businesses", {
   closureReason: text("closure_reason").notNull().default(""),
   closureUntil: timestamp("closure_until", { withTimezone: true }),
   scheduledLeaves: jsonb("scheduled_leaves").$type<{ date: string; reason: string }[]>().notNull().default([]),
+  /** Map pin and default delivery circle; map tiles are rendered client-side, no provider key is stored. */
+  latitude: doublePrecision("latitude"),
+  longitude: doublePrecision("longitude"),
+  deliveryRadiusMeters: integer("delivery_radius_meters").notNull().default(DEFAULT_DELIVERY_RADIUS_METERS),
+  /** Extra named circles for areas outside the default radius. */
+  deliveryZones: jsonb("delivery_zones").$type<DeliveryZone[]>().notNull().default([]),
+  /** All seven weekdays when configured; empty keeps the legacy single daily window. */
+  weeklyHours: jsonb("weekly_hours").$type<WeeklyDayHours[]>().notNull().default([]),
+  /** Active time-window menus; an empty item list means the full menu. */
+  dayParts: jsonb("day_parts").$type<DayPart[]>().notNull().default([]),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [

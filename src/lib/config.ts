@@ -4,9 +4,26 @@
  */
 
 /** Mirrors `@/lib/urls` without pulling a path alias into the standalone test runner. */
+export function isLoopbackHostname(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host.endsWith(".localhost");
+}
 function isLoopbackUrl(url: URL): boolean {
-  const hostname = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname.endsWith(".localhost");
+  return isLoopbackHostname(url.hostname);
+}
+
+/**
+ * Normalise the private database URL for `pg`: hosted databases get explicit TLS
+ * (the driver already maps `sslmode=require` to verified TLS), loopback stays
+ * plaintext, and every connection is labelled in the pooler's logs.
+ */
+export function prepareDatabaseConnectionString(raw: string): string {
+  const url = new URL(raw);
+  if (!isLoopbackUrl(url) && !url.searchParams.has("sslmode") && !url.searchParams.has("ssl")) {
+    url.searchParams.set("sslmode", "require");
+  }
+  url.searchParams.set("application_name", "savour-partner");
+  return url.toString();
 }
 
 export type ConfigReport = {
@@ -58,6 +75,15 @@ export function validateProductionConfig(env: NodeJS.ProcessEnv = process.env, o
       const url = new URL(databaseUrl);
       if (url.protocol !== "postgres:" && url.protocol !== "postgresql:") errors.push("DATABASE_URL must be a PostgreSQL connection string.");
       if (!url.hostname) errors.push("DATABASE_URL must include a host.");
+      // Supabase (like any hosted PostgreSQL) rejects plaintext connections. Node's
+      // driver already upgrades `sslmode=require` to verified TLS by default.
+      const sslmode = (url.searchParams.get("sslmode") ?? "").toLowerCase();
+      if (production && !isLoopbackUrl(url) && !(sslmode === "require" || sslmode === "verify-full" || sslmode === "verify-ca")) {
+        errors.push("DATABASE_URL must use sslmode=require or verify-full for a hosted PostgreSQL connection.");
+      }
+      if (/supabase\.com$/i.test(url.hostname) && (url.port === "5432" || !url.port)) {
+        warnings.push("DATABASE_URL uses Supabase's direct connection; use the transaction pooler (port 6543) for serverless deployments.");
+      }
     } catch { errors.push("DATABASE_URL must be a valid connection string."); }
   }
 

@@ -107,24 +107,30 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ order });
     }
     if (typeof body.id !== "string" || !uuid.test(body.id) || typeof body.expectedStatus !== "string" || typeof body.nextStatus !== "string" || !transitions[body.expectedStatus]?.includes(body.nextStatus)) throw new ApiError("Invalid order transition.");
+    const requestedStatus = body.nextStatus as OrderStatus;
     const reason = textValue(body.reason, 250);
-    if (body.nextStatus === "rejected" && !reason) throw new ApiError("Please provide a reason for rejecting this order.");
+    if (requestedStatus === "rejected" && !reason) throw new ApiError("Please provide a reason for rejecting this order.");
     const prepMinutes = Number(body.prepMinutes);
-    if (body.nextStatus === "accepted" && (!Number.isInteger(prepMinutes) || prepMinutes < 5 || prepMinutes > 180)) throw new ApiError("Choose a preparation time between 5 and 180 minutes.");
+    if (requestedStatus === "accepted" && (!Number.isInteger(prepMinutes) || prepMinutes < 5 || prepMinutes > 180)) throw new ApiError("Choose a preparation time between 5 and 180 minutes.");
     const updated = await db.transaction(async (tx) => {
       // Lock the order row before validating the transition. Without this, a concurrent
       // fulfilment change could make the fulfilment checks below operate on stale data.
       const [current] = await tx.select().from(orders).where(and(eq(orders.id, body.id), eq(orders.businessId, business.id))).limit(1).for("update");
       if (!current) throw new ApiError("Order not found.", 404);
       if (current.status !== body.expectedStatus) throw new ApiError("This order changed on another device. Refreshing the latest status.", 409);
-      if (body.nextStatus === "out_for_delivery" && current.fulfilment !== "delivery") throw new ApiError("Only delivery orders can be sent out for delivery.", 409);
-      if (body.nextStatus === "completed" && current.fulfilment === "delivery" && current.status === "ready") throw new ApiError("Send this delivery order out before marking it delivered.", 409);
-      const [result] = await tx.update(orders).set({ status: body.nextStatus, prepMinutes: body.nextStatus === "accepted" ? prepMinutes : current.prepMinutes, rejectionReason: body.nextStatus === "rejected" ? reason : current.rejectionReason, updatedAt: new Date() }).where(and(eq(orders.id, body.id), eq(orders.businessId, business.id), eq(orders.status, body.expectedStatus), eq(orders.fulfilment, current.fulfilment))).returning();
+      // Marking a delivery order ready hands it straight to the rider. Pickup orders
+      // keep the explicit counter handoff, and paired listings stay with Marketplace.
+      const autoHandoff = requestedStatus === "ready" && current.fulfilment === "delivery";
+      const finalStatus = autoHandoff ? "out_for_delivery" : requestedStatus;
+      if (requestedStatus === "out_for_delivery" && current.fulfilment !== "delivery") throw new ApiError("Only delivery orders can be sent out for delivery.", 409);
+      if (requestedStatus === "completed" && current.fulfilment === "delivery" && current.status === "ready") throw new ApiError("Send this delivery order out before marking it delivered.", 409);
+      const [result] = await tx.update(orders).set({ status: finalStatus, prepMinutes: requestedStatus === "accepted" ? prepMinutes : current.prepMinutes, rejectionReason: requestedStatus === "rejected" ? reason : current.rejectionReason, updatedAt: new Date() }).where(and(eq(orders.id, body.id), eq(orders.businessId, business.id), eq(orders.status, body.expectedStatus), eq(orders.fulfilment, current.fulfilment))).returning();
       if (!result) throw new ApiError("This order changed on another device. Refreshing the latest status.", 409);
-      await tx.insert(orderEvents).values({ orderId: result.id, actorId: user.id, fromStatus: body.expectedStatus, toStatus: body.nextStatus, reason });
+      await tx.insert(orderEvents).values({ orderId: result.id, actorId: user.id, fromStatus: body.expectedStatus, toStatus: requestedStatus, reason });
+      if (autoHandoff) await tx.insert(orderEvents).values({ orderId: result.id, actorId: user.id, fromStatus: "ready", toStatus: "out_for_delivery", reason: "Automatic handoff when marked ready" });
       return result;
     });
-    if (body.nextStatus !== "out_for_delivery") return NextResponse.json({ order: updated });
+    if (updated.status !== "out_for_delivery") return NextResponse.json({ order: updated });
     const dispatchedItems = await db.select({ name: orderItems.name, quantity: orderItems.quantity }).from(orderItems).where(eq(orderItems.orderId, updated.id));
     const dispatch = await dispatchCourierAssignment(request, { ...updated, items: dispatchedItems });
     return NextResponse.json({ order: updated, dispatch });

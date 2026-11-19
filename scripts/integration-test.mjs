@@ -258,15 +258,25 @@ try {
   const delivery = await request("/api/marketplace", { method: "POST", body: { ...deliveryPayload, deliveryAddress: "Test delivery address" } }); assert.equal(delivery.status, 201);
   assert.equal((await transition(restaurant.cookie, delivery.data.order.id, "new", "accepted", { prepMinutes: 20 })).status, 200);
   assert.equal((await transition(restaurant.cookie, delivery.data.order.id, "accepted", "preparing")).status, 200);
-  assert.equal((await transition(restaurant.cookie, delivery.data.order.id, "preparing", "ready")).status, 200);
+  // A local delivery order goes straight to out-for-delivery when marked ready, and attempts dispatch.
+  const handedOff = await transition(restaurant.cookie, delivery.data.order.id, "preparing", "ready");
+  assert.equal(handedOff.status, 200); assert.equal(handedOff.data.order.status, "out_for_delivery"); assert.ok(handedOff.data.dispatch);
+  assert.equal(scalar(`select count(*) from order_events where order_id='${delivery.data.order.id}' and reason='Automatic handoff when marked ready'`), "1");
   assert.equal((await transition(restaurant.cookie, delivery.data.order.id, "ready", "completed")).status, 409);
-  // A dispatch and a fulfilment change racing on the same order must not both succeed.
-  const [dispatched, switched] = await Promise.all([
-    transition(restaurant.cookie, delivery.data.order.id, "ready", "out_for_delivery"),
-    request("/api/merchant/orders", { method: "PATCH", cookie: restaurant.cookie, body: { id: delivery.data.order.id, fulfilment: "pickup" } }),
+  // The automatic handoff racing a fulfilment change must never leave a pickup order with a rider.
+  const raceKey = randomUUID();
+  const raceOrder = await request("/api/marketplace", { method: "POST", body: { ...deliveryPayload, idempotencyKey: raceKey, deliveryAddress: "Race delivery address" } });
+  assert.equal(raceOrder.status, 201);
+  assert.equal((await transition(restaurant.cookie, raceOrder.data.order.id, "new", "accepted", { prepMinutes: 20 })).status, 200);
+  assert.equal((await transition(restaurant.cookie, raceOrder.data.order.id, "accepted", "preparing")).status, 200);
+  const [handoffRace, switched] = await Promise.all([
+    transition(restaurant.cookie, raceOrder.data.order.id, "preparing", "ready"),
+    request("/api/merchant/orders", { method: "PATCH", cookie: restaurant.cookie, body: { id: raceOrder.data.order.id, fulfilment: "pickup" } }),
   ]);
-  assert.deepEqual([dispatched.status, switched.status].sort(), [200, 409]);
-  const racedTracking = await request(`/api/marketplace?orderId=${delivery.data.order.id}&token=${deliveryPayload.idempotencyKey}`);
+  // If the fulfilment switch wins the row lock, the order is ready for pickup instead of dispatched.
+  assert.equal(handoffRace.status, 200);
+  assert.ok(switched.status === 200 || switched.status === 409);
+  const racedTracking = await request(`/api/marketplace?orderId=${raceOrder.data.order.id}&token=${raceKey}`);
   assert.ok(!(racedTracking.data.order.status === "out_for_delivery" && racedTracking.data.order.fulfilment === "pickup"));
   // Provider seam: signed webhooks update order state idempotently and reject stale/replayed events.
   const courierSecret = process.env.COURIER_WEBHOOK_SECRET ?? "", paymentSecret = process.env.PAYMENT_WEBHOOK_SECRET ?? "";
@@ -274,10 +284,10 @@ try {
   if (providerEventsEnabled) {
     const providerOrder = await request("/api/marketplace", { method: "POST", body: { ...deliveryPayload, idempotencyKey: randomUUID(), deliveryAddress: "Provider test address" } });
     assert.equal(providerOrder.status, 201);
-    for (const [from, to, extra] of [["new", "accepted", { prepMinutes: 10 }], ["accepted", "preparing", {}], ["preparing", "ready", {}], ["ready", "out_for_delivery", {}]]) {
+    for (const [from, to, extra] of [["new", "accepted", { prepMinutes: 10 }], ["accepted", "preparing", {}], ["preparing", "ready", {}]]) {
       const result = await transition(restaurant.cookie, providerOrder.data.order.id, from, to, extra);
       assert.equal(result.status, 200);
-      if (to === "out_for_delivery") assert.ok(result.data.dispatch);
+      if (to === "ready") { assert.equal(result.data.order.status, "out_for_delivery"); assert.ok(result.data.dispatch); }
     }
     const base = { eventId: `courier_${run}`, businessId: restaurant.business.id, orderId: providerOrder.data.order.id, occurredAt: new Date(Date.now() - 120000).toISOString() };
     const assigned = { ...base, type: "assigned", trackingId: "TRACK-PROVIDER" };
@@ -331,6 +341,19 @@ try {
   assert.equal(earnings.data.overview.settlements.length, 1);
   assert.deepEqual({ ...earnings.data.overview.settlements[0], id: undefined, paidAt: undefined, sourceUpdatedAt: undefined, createdAt: undefined }, { id: undefined, externalId: settlementExternal, marketplaceOrderId: settlementOrder, orderNumber: 2847, netAmount: 54999, grossAmount: 56700, commissionAmount: 1701, refundAmount: 0, adjustmentAmount: 0, currency: "INR", status: "paid", reference: `PAYOUT_${run}`, paidAt: undefined, sourceUpdatedAt: undefined, createdAt: undefined });
   assert.equal(earnings.data.overview.settlementSync.linked, false);
+  const todayIst = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+  const insights = await request(`/api/merchant/analytics?from=${todayIst}&to=${todayIst}`, { cookie: restaurant.cookie });
+  assert.equal(insights.status, 200);
+  assert.equal(insights.data.analytics.source, "local");
+  assert.ok(insights.data.analytics.kpis.ordersPlaced >= 1);
+  assert.equal(insights.data.analytics.daily.length, 1);
+  assert.equal(insights.data.analytics.daily[0].date, todayIst);
+  assert.equal(insights.data.analytics.fulfilment.length, 2);
+  assert.ok(insights.data.analytics.payments.length >= 1);
+  const analyticsStaff = await request("/api/merchant/staff", { method: "POST", cookie: restaurant.cookie, body: { email: emails[2], role: "server" } });
+  assert.equal(analyticsStaff.status, 200);
+  assert.equal((await request("/api/merchant/analytics", { cookie: reassignTarget.cookie })).status, 403);
+  assert.equal((await request("/api/merchant/staff", { method: "DELETE", cookie: restaurant.cookie, body: { id: analyticsStaff.data.staff.id } })).status, 200);
   let duplicateSettlementRejected = false;
   try { sql(`insert into settlements (business_id, external_id, marketplace_order_id, amount, status, source_updated_at) values ('${restaurant.business.id}', 'settle_dup_${run}', '${settlementOrder}', 100, 'paid', now())`); } catch { duplicateSettlementRejected = true; }
   assert.equal(duplicateSettlementRejected, true);

@@ -3,15 +3,28 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { businesses } from "@/db/schema";
 import { cleanClosureReason, parseClosureUntil, parseScheduledLeaves } from "@/lib/closure";
-import { applyRemoteRestaurant, parseRemoteRestaurantResponse } from "@/lib/marketplace-payload";
+import { applyRemoteRestaurant, parseRemoteRestaurantResponse, type RemoteRestaurant } from "@/lib/marketplace-payload";
+import { parseDayParts, parseDeliveryZones, parseServiceLocation, parseWeeklyHours } from "@/lib/service-config";
 import { getMarketplaceLink, marketplaceFetch, parseMarketplaceResponse } from "@/lib/marketplace-bridge";
 import { ApiError, BODY_LIMITS, fail, readJson, requireBusiness, requireUser, sameOrigin, setActiveBusinessForSession, textValue } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
 
-/** Pure closure validation throws plain Errors; surface them as client errors. */
-function invalidClosure(error: unknown): ApiError {
-  return new ApiError(error instanceof Error ? error.message : "Invalid closure details.");
+/** Pure validation helpers throw plain Errors; surface them as client errors. */
+function invalidDetails(fallback: string, error: unknown): ApiError {
+  return new ApiError(error instanceof Error ? error.message : fallback);
+}
+function invalidClosure(error: unknown): ApiError { return invalidDetails("Invalid closure details.", error); }
+
+/** Paired settings are written upstream first so a failed proxy leaves the local copy untouched. */
+async function syncListing(businessId: string, payload: Record<string, unknown>): Promise<RemoteRestaurant | null> {
+  return parseMarketplaceResponse(
+    await marketplaceFetch(businessId, "/api/integration/merchant/business", { method: "PATCH", body: JSON.stringify(payload) }),
+    parseRemoteRestaurantResponse,
+  );
+}
+function withRemote<T extends object>(business: T, remote: RemoteRestaurant | null) {
+  return remote ? applyRemoteRestaurant(business, remote) : business;
 }
 export async function GET(request: NextRequest) {
   try { const { business } = await requireBusiness("overview.read"); return NextResponse.json({ business }); }
@@ -130,6 +143,40 @@ export async function PATCH(request: NextRequest) {
         : null;
       const [updated] = await db.update(businesses).set({ pickupEnabled: body.pickupEnabled, deliveryEnabled: body.deliveryEnabled, hoursEnabled: body.hoursEnabled, opensAt: body.opensAt, closesAt: body.closesAt, updatedAt: new Date() }).where(eq(businesses.id, business.id)).returning();
       return NextResponse.json({ business: remoteRestaurant ? applyRemoteRestaurant(updated, remoteRestaurant) : updated });
+    }
+    if (body.action === "location") {
+      let location;
+      try { location = parseServiceLocation(body); }
+      catch (error) { throw invalidDetails("Invalid map location.", error); }
+      const remoteRestaurant = linked ? await syncListing(business.id, {
+        latitude: location.latitude, longitude: location.longitude, deliveryRadiusMeters: location.deliveryRadiusMeters,
+      }) : null;
+      const [updated] = await db.update(businesses).set({ ...location, updatedAt: new Date() }).where(eq(businesses.id, business.id)).returning();
+      return NextResponse.json({ business: withRemote(updated, remoteRestaurant) });
+    }
+    if (body.action === "zones") {
+      let deliveryZones;
+      try { deliveryZones = parseDeliveryZones(body.deliveryZones); }
+      catch (error) { throw invalidDetails("Invalid delivery zones.", error); }
+      const remoteRestaurant = linked ? await syncListing(business.id, { deliveryZones }) : null;
+      const [updated] = await db.update(businesses).set({ deliveryZones, updatedAt: new Date() }).where(eq(businesses.id, business.id)).returning();
+      return NextResponse.json({ business: withRemote(updated, remoteRestaurant) });
+    }
+    if (body.action === "weekly-hours") {
+      let weeklyHours;
+      try { weeklyHours = parseWeeklyHours(body.weeklyHours); }
+      catch (error) { throw invalidDetails("Invalid weekly hours.", error); }
+      const remoteRestaurant = linked ? await syncListing(business.id, { weeklyHours }) : null;
+      const [updated] = await db.update(businesses).set({ weeklyHours, updatedAt: new Date() }).where(eq(businesses.id, business.id)).returning();
+      return NextResponse.json({ business: withRemote(updated, remoteRestaurant) });
+    }
+    if (body.action === "day-parts") {
+      let dayParts;
+      try { dayParts = parseDayParts(body.dayParts); }
+      catch (error) { throw invalidDetails("Invalid day parts.", error); }
+      const remoteRestaurant = linked ? await syncListing(business.id, { dayParts }) : null;
+      const [updated] = await db.update(businesses).set({ dayParts, updatedAt: new Date() }).where(eq(businesses.id, business.id)).returning();
+      return NextResponse.json({ business: withRemote(updated, remoteRestaurant) });
     }
     throw new ApiError("Unknown action.");
   } catch (error) { return fail(error, request); }

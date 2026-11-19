@@ -7,6 +7,7 @@
  * this module free of `server-only` imports lets the same rules run in tests.
  */
 
+import { optionalDayParts, optionalDeliveryZones, optionalWeeklyHours, MAX_DELIVERY_RADIUS_METERS, MIN_DELIVERY_RADIUS_METERS } from "./service-config.ts";
 import type { Business, FeedbackSummary, ItemAnalytics, ItemAnalyticsRow, MenuItem, MenuModifierGroup, MenuModifierOption, Offer, Order, OrderStatus, Review, ReviewInbox, ReviewTheme, RevenueSummary } from "@/lib/types";
 
 export const FEEDBACK_WINDOW_DAYS = 30;
@@ -204,7 +205,21 @@ export type RemoteRestaurant = {
   closureReason: string;
   closureUntil: string | null;
   scheduledLeaves: { date: string; reason: string }[];
+  /** Optional service-config fields. Absent or invalid values keep the local copy. */
+  latitude?: number;
+  longitude?: number;
+  deliveryRadiusMeters?: number;
+  deliveryZones?: NonNullable<Business["deliveryZones"]>;
+  weeklyHours?: NonNullable<Business["weeklyHours"]>;
+  dayParts?: NonNullable<Business["dayParts"]>;
 };
+
+function optionalCoordinate(value: unknown, min: number, max: number): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= min && value <= max ? value : undefined;
+}
+function optionalRadius(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value >= MIN_DELIVERY_RADIUS_METERS && value <= MAX_DELIVERY_RADIUS_METERS ? value : undefined;
+}
 
 export function parseRemoteRestaurant(value: unknown): RemoteRestaurant {
   const row = object(value, "Marketplace listing");
@@ -227,6 +242,12 @@ export function parseRemoteRestaurant(value: unknown): RemoteRestaurant {
             reason: optionalText(leave.reason, `scheduled leave ${index + 1} reason`, 80),
           };
         })),
+    latitude: optionalCoordinate(row.latitude ?? row.merchantLatitude, -90, 90),
+    longitude: optionalCoordinate(row.longitude ?? row.merchantLongitude, -180, 180),
+    deliveryRadiusMeters: optionalRadius(row.deliveryRadiusMeters ?? row.merchantDeliveryRadiusMeters),
+    deliveryZones: optionalDeliveryZones(row.deliveryZones ?? row.merchantDeliveryZones),
+    weeklyHours: optionalWeeklyHours(row.weeklyHours ?? row.merchantWeeklyHours),
+    dayParts: optionalDayParts(row.dayParts ?? row.merchantDayParts),
   };
 }
 
@@ -237,7 +258,8 @@ export function parseRemoteRestaurantResponse(payload: unknown): RemoteRestauran
   return parseRemoteRestaurant(root.restaurant);
 }
 
-type RemoteOwnedBusinessFields = Pick<Business, "name" | "approvalStatus" | "isOpen" | "hoursEnabled" | "opensAt" | "closesAt" | "pickupEnabled" | "deliveryEnabled" | "closureReason" | "closureUntil" | "scheduledLeaves">;
+type RemoteOwnedBusinessFields = Pick<Business, "name" | "approvalStatus" | "isOpen" | "hoursEnabled" | "opensAt" | "closesAt" | "pickupEnabled" | "deliveryEnabled" | "closureReason" | "closureUntil" | "scheduledLeaves">
+  & Partial<Pick<Business, "latitude" | "longitude" | "deliveryRadiusMeters" | "deliveryZones" | "weeklyHours" | "dayParts">>;
 
 /** Local business fields always come from Merchant; only authoritative listing fields are overwritten. */
 export function applyRemoteRestaurant<T extends object>(business: T, value: unknown): T & RemoteOwnedBusinessFields {
@@ -257,6 +279,15 @@ export function applyRemoteRestaurant<T extends object>(business: T, value: unkn
     closureReason: remote.closureReason,
     closureUntil: remote.closureUntil,
     scheduledLeaves: remote.scheduledLeaves,
+    // A connected Marketplace may not publish these newer fields yet; keep the
+    // local configuration until it does instead of silently clearing it.
+    ...(remote.latitude !== undefined && remote.longitude !== undefined
+      ? { latitude: remote.latitude, longitude: remote.longitude }
+      : {}),
+    ...(remote.deliveryRadiusMeters !== undefined ? { deliveryRadiusMeters: remote.deliveryRadiusMeters } : {}),
+    ...(remote.deliveryZones !== undefined ? { deliveryZones: remote.deliveryZones } : {}),
+    ...(remote.weeklyHours !== undefined ? { weeklyHours: remote.weeklyHours } : {}),
+    ...(remote.dayParts !== undefined ? { dayParts: remote.dayParts } : {}),
   };
 }
 
