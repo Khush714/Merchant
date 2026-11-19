@@ -5,6 +5,7 @@ import Link from "next/link";
 import { ArrowDownRight, ArrowRight, ArrowUpRight, BadgePercent, Bell, BellRing, Bike, BookOpen, CalendarDays, Check, CheckCircle2, ChefHat, ChevronDown, ChevronLeft, ChevronRight, CircleDollarSign, Clock3, CreditCard, Download, ExternalLink, Headphones, HelpCircle, Home, Info, KeyRound, LayoutGrid, Link2, LogOut, Mail, Menu as MenuIcon, MoreHorizontal, PackageCheck, Plus, Search, Settings2, ShieldCheck, ShoppingBag, Sparkles, Star, Store, Trash2, Users, UtensilsCrossed, WifiOff, X } from "lucide-react";
 import { AccountModal, Api401Error, AUTH_EXPIRED_EVENT, api, DecisionModal, FulfilmentModal, MenuModal, ModifierGroupModal, Modal, OfferModal, PasswordModal, SetupModal, type MenuInput, type ModifierGroupInput } from "@/components/dialogs";
 import { BusinessSettings } from "@/components/business-settings";
+import { Compliance } from "@/components/compliance";
 import { OrderCard, statusLabel, timeAgo, type OrderAction } from "@/components/order-card";
 import { demoBusiness, demoMenu, demoModifierGroups, demoOverview, makeDemoOffers, makeDemoOrders } from "@/lib/demo";
 import { MARKETPLACE_LINK_INVALID } from "@/lib/marketplace-link-status";
@@ -15,7 +16,7 @@ import { can, ROLE_DESCRIPTIONS, ROLE_LABELS, STAFF_ROLES, type AppRole, type Pe
 import { localReviewThemes } from "@/lib/review-themes";
 import { money, type AuthResponse, type AuthUser, type Business, type BusinessOption, type FeedbackSummary, type ItemAnalytics, type MenuItem, type MenuModifierGroup, type Offer, type OfferInput, type Order, type OrderStatus, type Overview, type Review, type ReviewInbox, type ReviewTheme, type RevenueSummary, type StaffMember } from "@/lib/types";
 
-type Page = "home" | "orders" | "menu" | "offers" | "reviews" | "staff" | "earnings" | "more";
+type Page = "home" | "orders" | "menu" | "offers" | "reviews" | "staff" | "earnings" | "compliance" | "more";
 type User = AuthUser;
 type AuthData = AuthResponse;
 type Filter = "active" | "all" | "new" | "accepted" | "preparing" | "ready" | "out_for_delivery" | "completed" | "cancelled" | "feedback";
@@ -29,6 +30,7 @@ const navItems: { id: Page; label: string; icon: typeof Home; permission?: Permi
   { id: "reviews", label: "Reviews", icon: Star, permission: "feedback.write" },
   { id: "staff", label: "Staff", icon: Users, permission: "staff.write" },
   { id: "earnings", label: "Earnings", icon: CircleDollarSign, permission: "settlements.read" },
+  { id: "compliance", label: "Compliance", icon: ShieldCheck, permission: "compliance.read" },
   { id: "more", label: "More", icon: LayoutGrid },
 ];
 const filters: { id: Filter; label: string }[] = [{ id: "active", label: "Active" }, { id: "new", label: "New" }, { id: "accepted", label: "Accepted" }, { id: "preparing", label: "Preparing" }, { id: "ready", label: "Ready" }, { id: "out_for_delivery", label: "Out for delivery" }, { id: "completed", label: "Completed" }, { id: "feedback", label: "Feedback" }, { id: "cancelled", label: "Cancelled" }, { id: "all", label: "All" }];
@@ -757,6 +759,7 @@ export default function MerchantApp() {
           <div className="info-box">{demo ? "Demo item sales are calculated from the items in your completed sample orders." : "Item sales are calculated by Marketplace from completed order snapshots, including modifier charges. Renamed or removed menu items still show the name customers ordered."}</div>
         </>}
       </>}
+        {page === "compliance" && business && <Compliance key={business.id} business={business} role={role} demo={demo} onToast={setToast} onChanged={() => setRefreshKey((n) => n + 1)} />}
         {page === "more" && <><div className="page-intro"><div><div className="eyebrow">MAKE IT YOURS <span>✳</span></div><h1>Business settings</h1><p>Manage the details that keep this outlet running.</p></div><div className="settings-actions">{!demo && role === "owner" && <button className="btn btn-outline" onClick={() => setAddOutletOpen(true)}><Plus size={16} /> Add outlet</button>}{user && <button className="btn btn-outline" onClick={signOut}><LogOut size={16} /> Sign out</button>}</div></div>{!can(role, "settings.write") ? <Empty icon={<ShieldCheck size={25} />} title="Read-only access" text={`Your ${ROLE_LABELS[role].toLowerCase()} role cannot change business settings.`} /> : business ? <BusinessSettings key={business.id} business={business} onSave={saveSettings} /> : <Empty icon={<Store size={25} />} title="Finish setting up" text="Add your business details to manage your workspace." action={<button className="btn btn-primary" onClick={() => setSetupOpen(true)}>Continue setup</button>} />}</>}
         <footer className="page-footer"><span>Made for the people behind the plate <span>♥</span></span><span>© Savour Partner</span></footer>
       </div>

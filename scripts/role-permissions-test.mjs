@@ -26,4 +26,9 @@ const ui = readFileSync(new URL("../src/components/merchant-app.tsx", import.met
 assert.match(ui, /can\(role, "menu\.availability"\)/);
 assert.match(ui, /can\(role, "menu\.write"\)/);
 
+// The Compliance tab is read-visible to managers, while every write action stays owner-only.
+assert.match(ui, /id: "compliance", label: "Compliance", icon: ShieldCheck, permission: "compliance\.read"/);
+const complianceUi = readFileSync(new URL("../src/components/compliance.tsx", import.meta.url), "utf8");
+assert.match(complianceUi, /can\(role, "compliance\.write"\)/);
+
 console.log("PASS: server availability permission matches the API and UI");
