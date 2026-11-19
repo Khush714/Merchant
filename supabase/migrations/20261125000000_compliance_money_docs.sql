@@ -1,6 +1,6 @@
 -- Outlet-scoped compliance metadata, private document references, versioned
 -- agreements and mirrored/pro forma tax invoices. Matches
--- drizzle/0016_compliance_money_docs.sql; file bytes stay in private storage.
+-- drizzle/0018_compliance_money_docs.sql; file bytes stay in private storage.
 CREATE TABLE IF NOT EXISTS public.business_compliance (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   business_id uuid NOT NULL REFERENCES public.businesses(id) ON DELETE cascade,
