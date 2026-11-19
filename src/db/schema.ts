@@ -27,6 +27,8 @@ export const businessMarketplaceLinks = pgTable("business_marketplace_links", {
 export const sessions = pgTable("sessions", {
   tokenHash: text("token_hash").primaryKey(),
   userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  /** Outlet selected for this browser session; NULL means resolve the account's first available outlet. */
+  activeBusinessId: uuid("active_business_id").references(() => businesses.id, { onDelete: "set null" }),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [index("sessions_user_idx").on(table.userId)]);
@@ -65,7 +67,7 @@ export const auditLogs = pgTable("audit_logs", {
 
 export const businesses = pgTable("businesses", {
   id: uuid("id").primaryKey().defaultRandom(),
-  ownerId: uuid("owner_id").notNull().unique().references(() => users.id),
+  ownerId: uuid("owner_id").notNull().references(() => users.id),
   type: text("type").notNull().default("restaurant"),
   name: text("name").notNull().default(""),
   ownerName: text("owner_name").notNull().default(""),
@@ -86,7 +88,10 @@ export const businesses = pgTable("businesses", {
   scheduledLeaves: jsonb("scheduled_leaves").$type<{ date: string; reason: string }[]>().notNull().default([]),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-}, (table) => [index("businesses_public_idx").on(table.approvalStatus, table.isOpen)]);
+}, (table) => [
+  index("businesses_public_idx").on(table.approvalStatus, table.isOpen),
+  index("businesses_owner_idx").on(table.ownerId),
+]);
 
 /** Non-owner team members. Removal is a soft delete so history and re-invites stay simple. */
 export const staffMembers = pgTable("staff_members", {

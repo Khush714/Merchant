@@ -5,7 +5,8 @@ import { users } from "@/db/schema";
 import { consumeAccountToken, createAccountToken, isAccountToken } from "@/lib/account-tokens";
 import { isEmailConfigured, sendPasswordResetEmail, sendVerificationEmail } from "@/lib/email";
 import { getMarketplaceLink } from "@/lib/marketplace-bridge";
-import { ApiError, BODY_LIMITS, businessForUser, changePassword, createSession, currentUser, deleteAllSessions, deleteSession, fail, hashPassword, rateLimit, readJson, recordAudit, requireUser, sameOrigin, textValue, verificationRequired, verifyPassword } from "@/lib/server";
+import { ApiError, BODY_LIMITS, businessForUser, businessesForUser, changePassword, createSession, currentUser, deleteAllSessions, deleteSession, fail, hashPassword, rateLimit, readJson, recordAudit, requireUser, sameOrigin, sessionContext, textValue, verificationRequired, verifyPassword } from "@/lib/server";
+import type { BusinessOption } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -14,21 +15,42 @@ function authUser(record: { id: string; email: string; emailVerifiedAt: Date | n
 }
 
 /** A paired Marketplace listing is already live; the local approval flag only tracks unlinked setup. */
-async function withListingStatus<T extends { id: string; approvalStatus: string }>(business: T | undefined | null) {
+async function withListingStatus<T extends { id: string; approvalStatus: string }>(business: T | undefined | null, linked?: boolean) {
   if (!business) return null;
-  return (await getMarketplaceLink(business.id)) ? { ...business, approvalStatus: "approved" as const } : business;
+  const isLinked = linked ?? Boolean(await getMarketplaceLink(business.id));
+  return isLinked ? { ...business, approvalStatus: "approved" as const } : business;
 }
 
-async function listingFor(userId: string) {
-  const found = await businessForUser(userId);
-  return { business: await withListingStatus(found?.business), role: found?.role ?? null };
+/** Builds the auth payload for a user. A null active id means "use this account's first outlet". */
+export async function listingFor(userId: string, activeBusinessId?: string | null) {
+  const [active, available] = await Promise.all([
+    businessForUser(userId, activeBusinessId),
+    businessesForUser(userId),
+  ]);
+  const options: BusinessOption[] = await Promise.all(available.map(async ({ business, role }) => {
+    const linked = Boolean(await getMarketplaceLink(business.id));
+    return {
+      id: business.id,
+      name: business.name,
+      type: business.type as BusinessOption["type"],
+      approvalStatus: linked ? "approved" : business.approvalStatus as BusinessOption["approvalStatus"],
+      isOpen: business.isOpen,
+      role,
+      linked,
+    };
+  }));
+  const business = active
+    ? await withListingStatus(active.business, options.find((option) => option.id === active.business.id)?.linked)
+    : null;
+  return { business, role: active?.role ?? null, businesses: options };
 }
 
 export async function GET(request: NextRequest) {
   try {
     const user = await currentUser();
-    if (!user) return NextResponse.json({ user: null, business: null, role: null, verificationRequired: verificationRequired() });
-    return NextResponse.json({ user, ...(await listingFor(user.id)), verificationRequired: verificationRequired() });
+    if (!user) return NextResponse.json({ user: null, business: null, role: null, businesses: [], verificationRequired: verificationRequired() });
+    const context = await sessionContext();
+    return NextResponse.json({ user, ...(await listingFor(user.id, context?.activeBusinessId)), verificationRequired: verificationRequired() });
   } catch (error) { return fail(error, request); }
 }
 export async function POST(request: NextRequest) {
@@ -133,7 +155,7 @@ export async function POST(request: NextRequest) {
       }
       const token = await createAccountToken(user.id, "verify_email");
       const delivery = await sendVerificationEmail(request, user.email, token);
-      const response = NextResponse.json({ user: authUser(user), business: null, verificationRequired: verificationRequired() }, { status: 201 });
+      const response = NextResponse.json({ user: authUser(user), business: null, role: null, businesses: [], verificationRequired: verificationRequired() }, { status: 201 });
       await createSession(user.id, response);
       await recordAudit({ request, event: "auth.register", outcome: "success", userId: user.id, email: user.email, detail: { verificationSent: delivery.sent } });
       return response;
@@ -144,7 +166,8 @@ export async function POST(request: NextRequest) {
         await recordAudit({ request, event: "auth.login", outcome: "failure", email, detail: { reason: "invalid_credentials" } });
         throw new ApiError("Incorrect email or password.", 401);
       }
-      const response = NextResponse.json({ user: authUser(record), ...(await listingFor(record.id)), verificationRequired: verificationRequired() });
+      // A fresh session starts with no outlet selection, so use the account's default outlet.
+      const response = NextResponse.json({ user: authUser(record), ...(await listingFor(record.id, null)), verificationRequired: verificationRequired() });
       await createSession(record.id, response);
       await recordAudit({ request, event: "auth.login", outcome: "success", userId: record.id, email: record.email });
       return response;

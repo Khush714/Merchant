@@ -11,7 +11,19 @@ export type Business = {
   /** Optional overlays on isOpen; older demo and cached records may omit them. */
   closureReason?: string; closureUntil?: string | null; scheduledLeaves?: { date: string; reason: string }[];
 };
-export type AuthResponse = { user: AuthUser | null; business: Business | null; role: AppRole | null; verificationRequired: boolean };
+/** Outlet shown in the switcher. `role` is specific to this outlet, not to the account. */
+export type BusinessOption = {
+  id: string; name: string; type: BusinessType;
+  approvalStatus: Business["approvalStatus"]; isOpen: boolean;
+  role: AppRole; linked: boolean;
+};
+export type AuthResponse = {
+  user: AuthUser | null;
+  business: Business | null;
+  role: AppRole | null;
+  businesses: BusinessOption[];
+  verificationRequired: boolean;
+};
 export type StaffMember = {
   id: string; businessId: string; userId: string; email: string; role: StaffRole;
   status: "active" | "removed"; createdAt: string; updatedAt: string;

@@ -1,11 +1,11 @@
-import { eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { businesses } from "@/db/schema";
 import { cleanClosureReason, parseClosureUntil, parseScheduledLeaves } from "@/lib/closure";
 import { applyRemoteRestaurant, parseRemoteRestaurantResponse } from "@/lib/marketplace-payload";
 import { getMarketplaceLink, marketplaceFetch, parseMarketplaceResponse } from "@/lib/marketplace-bridge";
-import { ApiError, BODY_LIMITS, fail, readJson, requireBusiness, requireUser, sameOrigin, textValue } from "@/lib/server";
+import { ApiError, BODY_LIMITS, fail, readJson, requireBusiness, requireUser, sameOrigin, setActiveBusinessForSession, textValue } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
 
@@ -23,14 +23,17 @@ export async function POST(request: NextRequest) {
     const user = await requireUser();
     const body = await readJson(request, BODY_LIMITS.business);
     if (body.type !== "restaurant" && body.type !== "vendor") throw new ApiError("Choose a business type.");
-    const [existing] = await db.select().from(businesses).where(eq(businesses.ownerId, user.id)).limit(1);
-    if (existing) {
+    const createNew = body.createNew === true;
+    const [existing] = await db.select().from(businesses)
+      .where(eq(businesses.ownerId, user.id)).orderBy(asc(businesses.createdAt)).limit(1);
+    if (existing && !createNew) {
+      // First-time setup resumes the existing draft so a refresh cannot create duplicate outlets.
       if (existing.approvalStatus !== "draft") return NextResponse.json({ business: existing });
       const [business] = await db.update(businesses).set({ type: body.type, updatedAt: new Date() }).where(eq(businesses.id, existing.id)).returning();
       return NextResponse.json({ business });
     }
-    const [business] = await db.insert(businesses).values({ ownerId: user.id, type: body.type }).onConflictDoNothing().returning();
-    if (!business) throw new ApiError("Business already exists. Refresh and try again.", 409);
+    const [business] = await db.insert(businesses).values({ ownerId: user.id, type: body.type }).returning();
+    if (createNew) await setActiveBusinessForSession(business.id);
     return NextResponse.json({ business }, { status: 201 });
   } catch (error) { return fail(error, request); }
 }

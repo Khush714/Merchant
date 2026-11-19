@@ -11,14 +11,9 @@ const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 type Outcome =
   | { kind: "success"; business: typeof businesses.$inferSelect; previousOwnerId: string }
   | { kind: "unchanged"; business: typeof businesses.$inferSelect }
-  | { kind: "not_found" }
-  | { kind: "conflict" };
+  | { kind: "not_found" };
 
-function isUniqueViolation(error: unknown) {
-  return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "23505";
-}
-
-/** Recovery hook for a business created under the wrong account. The destination account must already exist. */
+/** Recovery hook for an outlet created under the wrong account. The destination account must already exist. */
 export async function POST(request: NextRequest) {
   try {
     await requireAdmin(request, "admin.reassign_owner", "admin-owner");
@@ -36,33 +31,20 @@ export async function POST(request: NextRequest) {
       throw new ApiError("The destination account does not exist. Ask them to register first.", 404);
     }
 
-    let outcome: Outcome;
-    try {
-      outcome = await db.transaction(async (tx) => {
-        const [business] = await tx.select().from(businesses).where(eq(businesses.id, businessId)).limit(1);
-        if (!business) return { kind: "not_found" } satisfies Outcome;
-        if (business.ownerId === target.id) return { kind: "unchanged", business } satisfies Outcome;
-        const [occupied] = await tx.select({ id: businesses.id }).from(businesses).where(eq(businesses.ownerId, target.id)).limit(1);
-        if (occupied) return { kind: "conflict" } satisfies Outcome;
-        const [updated] = await tx.update(businesses)
-          .set({ ownerId: target.id, updatedAt: new Date() })
-          .where(eq(businesses.id, businessId))
-          .returning();
-        return { kind: "success", business: updated, previousOwnerId: business.ownerId } satisfies Outcome;
-      });
-    } catch (error) {
-      // A concurrent reassignment can still violate the one-business-per-owner constraint.
-      if (isUniqueViolation(error)) outcome = { kind: "conflict" };
-      else throw error;
-    }
+    const outcome: Outcome = await db.transaction(async (tx) => {
+      const [business] = await tx.select().from(businesses).where(eq(businesses.id, businessId)).limit(1);
+      if (!business) return { kind: "not_found" } satisfies Outcome;
+      if (business.ownerId === target.id) return { kind: "unchanged", business } satisfies Outcome;
+      const [updated] = await tx.update(businesses)
+        .set({ ownerId: target.id, updatedAt: new Date() })
+        .where(eq(businesses.id, businessId))
+        .returning();
+      return { kind: "success", business: updated, previousOwnerId: business.ownerId } satisfies Outcome;
+    });
 
     if (outcome.kind === "not_found") {
       await recordAudit({ request, event: "admin.reassign_owner", outcome: "failure", businessId, detail: { reason: "business_not_found" } });
       throw new ApiError("Business not found.", 404);
-    }
-    if (outcome.kind === "conflict") {
-      await recordAudit({ request, event: "admin.reassign_owner", outcome: "failure", businessId, detail: { reason: "target_has_business" } });
-      throw new ApiError("The destination account already owns a business.", 409);
     }
     if (outcome.kind === "unchanged") {
       await recordAudit({ request, event: "admin.reassign_owner", outcome: "success", businessId, detail: { unchanged: true } });

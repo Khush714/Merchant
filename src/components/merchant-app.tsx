@@ -13,7 +13,7 @@ import { discountLabel, isOfferLive } from "@/lib/offers";
 import { normalizeRevenueRange, rangeForPreset, revenueRangeLabel, REVENUE_PRESETS, type RevenuePreset, type RevenueRange } from "@/lib/revenue";
 import { can, ROLE_DESCRIPTIONS, ROLE_LABELS, STAFF_ROLES, type AppRole, type Permission, type StaffRole } from "@/lib/roles";
 import { localReviewThemes } from "@/lib/review-themes";
-import { money, type AuthResponse, type AuthUser, type Business, type FeedbackSummary, type ItemAnalytics, type MenuItem, type MenuModifierGroup, type Offer, type OfferInput, type Order, type OrderStatus, type Overview, type Review, type ReviewInbox, type ReviewTheme, type RevenueSummary, type StaffMember } from "@/lib/types";
+import { money, type AuthResponse, type AuthUser, type Business, type BusinessOption, type FeedbackSummary, type ItemAnalytics, type MenuItem, type MenuModifierGroup, type Offer, type OfferInput, type Order, type OrderStatus, type Overview, type Review, type ReviewInbox, type ReviewTheme, type RevenueSummary, type StaffMember } from "@/lib/types";
 
 type Page = "home" | "orders" | "menu" | "offers" | "reviews" | "staff" | "earnings" | "more";
 type User = AuthUser;
@@ -84,7 +84,7 @@ function subscribeToNetwork(callback: () => void) {
 function getNetworkStatus() { return navigator.onLine; }
 
 export default function MerchantApp() {
-  const [demo, setDemo] = useState(true), [user, setUser] = useState<User | null>(null), [verificationRequired, setVerificationRequired] = useState(false), [business, setBusiness] = useState<Business | null>(demoBusiness), [role, setRole] = useState<AppRole>("owner");
+  const [demo, setDemo] = useState(true), [user, setUser] = useState<User | null>(null), [verificationRequired, setVerificationRequired] = useState(false), [business, setBusiness] = useState<Business | null>(demoBusiness), [role, setRole] = useState<AppRole>("owner"), [businesses, setBusinesses] = useState<BusinessOption[]>([]);
   const [orders, setOrders] = useState<Order[]>(() => makeDemoOrders()), [items, setItems] = useState<MenuItem[]>(demoMenu), [modifierGroups, setModifierGroups] = useState<MenuModifierGroup[]>(demoModifierGroups), [overview, setOverview] = useState<Overview>(emptyOverview), [offers, setOffers] = useState<Offer[]>(() => makeDemoOffers(makeDemoOrders()));
   const [page, setPage] = useState<Page>("home"), [orderFilter, setOrderFilter] = useState<Filter>("active"), [homeFilter, setHomeFilter] = useState<"all" | "new" | "preparing" | "ready" | "out_for_delivery">("all");
   const [search, setSearch] = useState(""), [debouncedSearch, setDebouncedSearch] = useState(""), [from, setFrom] = useState(""), [to, setTo] = useState(""), [orderPage, setOrderPage] = useState(1), [hasMore, setHasMore] = useState(false);
@@ -96,16 +96,31 @@ export default function MerchantApp() {
   const [itemReport, setItemReport] = useState<ItemAnalytics | null>(null), [itemReportBusy, setItemReportBusy] = useState(false), [itemReportError, setItemReportError] = useState("");
   const [reviews, setReviews] = useState<Review[]>([]), [reviewSummary, setReviewSummary] = useState<FeedbackSummary>(emptyFeedback), [reviewThemes, setReviewThemes] = useState<ReviewTheme[]>([]), [reviewsBusy, setReviewsBusy] = useState(false), [reviewsError, setReviewsError] = useState(""), [reviewReplyBusy, setReviewReplyBusy] = useState("");
   const [feedbackRefreshKey, setFeedbackRefreshKey] = useState(0);
+  const [outletMenuOpen, setOutletMenuOpen] = useState(false), [switchingOutlet, setSwitchingOutlet] = useState(false), [addOutletOpen, setAddOutletOpen] = useState(false);
   const lastNewCount = useRef<number | null>(null), lastNewId = useRef<string | null>(null), actionBusyRef = useRef<Set<string>>(new Set());
   const versionRef = useRef<{ orders: string; feedback: string } | null>(null);
   const reviewCountsRef = useRef<{ reviewCount: number; pendingReplies: number } | null>(null);
   const [actionBusy, setActionBusy] = useState<Record<string, boolean>>({});
 
-  const activate = useCallback((data: AuthData) => {
+  const activate = useCallback((data: AuthData, openSetup = true) => {
     if (!data.user) return;
-    setDemo(false); setUser(data.user); setVerificationRequired(data.verificationRequired); setBusiness(data.business); setRole(data.role ?? "owner"); setOrders([]); setItems([]); setOverview(emptyOverview); setOffers([]); setOffersError(""); setRevenue(null); setRevenueError(""); setItemReport(null); setItemReportError(""); setReviews([]); setReviewSummary(emptyFeedback); setReviewThemes([]); setReviewsError(""); setStaff([]); setStaffError(""); setOfferFilter("active"); setPage("home"); setAccountOpen(false); setLinkInvalid(false); lastNewCount.current = null; lastNewId.current = null; versionRef.current = null; reviewCountsRef.current = null;
-    if (!data.business || data.business.approvalStatus === "draft") setSetupOpen(true);
+    setDemo(false); setUser(data.user); setVerificationRequired(data.verificationRequired); setBusiness(data.business); setRole(data.role ?? "owner"); setBusinesses(data.businesses ?? []); setOrders([]); setItems([]); setOverview(emptyOverview); setOffers([]); setOffersError(""); setRevenue(null); setRevenueError(""); setItemReport(null); setItemReportError(""); setReviews([]); setReviewSummary(emptyFeedback); setReviewThemes([]); setReviewsError(""); setStaff([]); setStaffError(""); setOfferFilter("active"); setPage("home"); setAccountOpen(false); setLinkInvalid(false); lastNewCount.current = null; lastNewId.current = null; versionRef.current = null; reviewCountsRef.current = null;
+    if (openSetup && (!data.business || data.business.approvalStatus === "draft")) setSetupOpen(true);
   }, []);
+  async function switchOutlet(id: string) {
+    if (demo || switchingOutlet || id === business?.id) { setOutletMenuOpen(false); return; }
+    setSwitchingOutlet(true); setOutletMenuOpen(false);
+    try {
+      const data = await api<AuthData>("/api/merchant/active-business", { method: "POST", body: JSON.stringify({ businessId: id }) });
+      activate(data);
+      setToast(`Switched to ${data.business?.name || "outlet"}.`);
+    } catch (error) { setToast(error instanceof Error ? error.message : "Could not switch outlets."); }
+    finally { setSwitchingOutlet(false); }
+  }
+  async function refreshAfterOutlet() {
+    try { activate(await api<AuthData>("/api/auth"), false); }
+    catch { setToast("Outlet created. Refresh to see it."); }
+  }
   // Proactively check the pairing token so a dead link is obvious before any sync call fails.
   const checkLink = useCallback(async () => {
     if (demo || !business?.id) return;
@@ -120,7 +135,7 @@ export default function MerchantApp() {
   useEffect(() => { let active = true; api<AuthData>("/api/auth").then((data) => { if (active && data.user) activate(data); }).catch(() => { if (active) setSyncError("Couldn’t reach the server. Try again when you’re online."); }); return () => { active = false; }; }, [activate]);
   useEffect(() => {
     const reset = () => {
-      setDemo(true); setUser(null); setVerificationRequired(false); setBusiness(demoBusiness); setRole("owner");
+      setDemo(true); setUser(null); setVerificationRequired(false); setBusiness(demoBusiness); setRole("owner"); setBusinesses([]); setOutletMenuOpen(false); setAddOutletOpen(false);
       setOrders(makeDemoOrders()); setItems(demoMenu); setOverview(emptyOverview); setOffers(makeDemoOffers(makeDemoOrders())); setRevenue(null); setRevenueError(""); setItemReport(null); setItemReportError(""); setReviews([]); setReviewSummary(emptyFeedback); setReviewThemes([]); setReviewsError("");
       setPage("home"); setAccountOpen(false); setProfileOpen(false); setSetupOpen(false); setOfferFilter("active");
       setSyncError(""); setMenuError(""); setOffersError(""); setLinkInvalid(false); setToast("Your session expired. Please sign in again.");
@@ -507,7 +522,7 @@ export default function MerchantApp() {
     }
     const data = await api<{ business: Business }>("/api/merchant/business", { method: "PATCH", body: JSON.stringify(payload) }); setBusiness(data.business);
   }
-  async function endSession(action: "logout" | "logout-all", message: string) { try { await api("/api/auth", { method: "POST", body: JSON.stringify({ action }) }); setDemo(true); setUser(null); setVerificationRequired(false); setBusiness(demoBusiness); setOrders(makeDemoOrders()); setItems(demoMenu); setPage("home"); setToast(message); } catch (err) { setToast(err instanceof Error ? err.message : "Could not sign out."); } }
+  async function endSession(action: "logout" | "logout-all", message: string) { try { await api("/api/auth", { method: "POST", body: JSON.stringify({ action }) }); setDemo(true); setUser(null); setVerificationRequired(false); setBusiness(demoBusiness); setBusinesses([]); setOutletMenuOpen(false); setAddOutletOpen(false); setOrders(makeDemoOrders()); setItems(demoMenu); setPage("home"); setToast(message); } catch (err) { setToast(err instanceof Error ? err.message : "Could not sign out."); } }
   function signOut() { return endSession("logout", "Signed out."); }
   function signOutEverywhere() { return endSession("logout-all", "Signed out of all devices."); }
   async function resendVerification() {
@@ -642,7 +657,13 @@ export default function MerchantApp() {
   }
   function switchDemoMode() { if (!business) return; const next = business.type === "restaurant" ? "vendor" : "restaurant"; setBusiness({ ...business, type: next }); if (page === "more") setPage("home"); setToast(`Exploring ${next === "vendor" ? "street vendor" : "restaurant"} mode with sample data.`); }
   function navigate(next: Page) { setPage(next); if (next === "orders") { setOrderPage(1); setOrderFilter("active"); } window.scrollTo({ top: 0, behavior: "smooth" }); }
+  function toggleOutletMenu() {
+    if (demo) { setAccountOpen(true); return; }
+    if (businesses.length > 1) setOutletMenuOpen((open) => !open);
+    else setProfileOpen(true);
+  }
   const storeSwitch = <button className={`switch ${business?.isOpen ? "on" : ""}`} role="switch" aria-checked={!!business?.isOpen} aria-label="Store open for orders" disabled={!business || busyStore} onClick={toggleStore}><span /></button>;
+  const outletMenu = outletMenuOpen && !demo && businesses.length > 1 ? <><button className="outlet-menu-backdrop" aria-label="Close outlet menu" onClick={() => setOutletMenuOpen(false)} /><div className="outlet-menu" role="menu"><div className="outlet-menu-head">Your outlets</div>{businesses.map((option) => <button key={option.id} role="menuitem" className={`outlet-menu-item ${option.id === business?.id ? "active" : ""}`} disabled={switchingOutlet} onClick={() => void switchOutlet(option.id)}><span className="store-avatar small-avatar">{initials(option.name)}</span><span className="outlet-menu-text"><strong>{option.name || "Unnamed outlet"}</strong><small>{option.linked ? "Marketplace connected" : "Not connected"}</small></span>{option.id === business?.id && <Check size={16} />}</button>)}{role === "owner" && <button className="outlet-menu-add" onClick={() => { setOutletMenuOpen(false); setAddOutletOpen(true); }}><Plus size={15} /> Add outlet</button>}<div className="outlet-menu-divider" /><button className="outlet-menu-account" onClick={() => { setOutletMenuOpen(false); setProfileOpen(true); }}>Account &amp; settings</button></div></> : null;
 
   return <div className="app-shell">
     <aside className="sidebar"><div className="brand"><span className="brand-mark"><UtensilsCrossed size={20} strokeWidth={2.4} /></span><div><strong>savour<span>.</span></strong><small>PARTNER</small></div></div>
@@ -650,8 +671,8 @@ export default function MerchantApp() {
       <div className="sidebar-spacer" /><div className="sidebar-help"><div className="help-icon"><Headphones size={19} /></div><strong>Here when you need us</strong><p>Questions about your workspace?</p><button onClick={() => setHelpOpen(true)}>Visit help centre <ArrowRight size={14} /></button></div>
       <div className="sidebar-bottom"><div className="store-avatar">{initials(name)}</div><div className="store-identity"><strong>{name}</strong><span>{vendor ? "Street vendor" : "Restaurant partner"}</span></div><button className="icon-button small" aria-label="Account options" onClick={() => demo ? setAccountOpen(true) : vendor ? setProfileOpen(true) : navigate("more")}><MoreHorizontal size={19} /></button></div>
     </aside>
-    <main className="main-area"><header className="topbar"><div className="breadcrumb"><span>Workspace</span><ChevronRight size={15} /><strong>{navItems.find((n) => n.id === page)?.label}</strong></div><div className="topbar-right"><div className="top-search"><Search size={17} /><input aria-label="Search order number" placeholder="Search orders..." value={search} onChange={(e) => { setSearch(e.target.value); setPage("orders"); setOrderFilter("all"); }} /></div><button className="top-notification" aria-label="Notification settings" onClick={() => setNotificationsOpen(true)}><Bell size={19} /><span /></button><div className="top-divider" /><button className="top-store" onClick={() => demo ? setAccountOpen(true) : setProfileOpen(true)}><div className="store-avatar small-avatar">{initials(name)}</div><div><strong>{name}</strong><span>{demo ? "Sample workspace" : user?.email}</span></div><ChevronDown size={15} /></button></div></header>
-      <div className="mobile-topbar"><div className="mobile-brand"><span className="brand-mark"><UtensilsCrossed size={18} /></span><strong>savour<span>.</span></strong><small>PARTNER</small></div><div className="mobile-top-actions"><button className="icon-button" aria-label="Notifications" onClick={() => setNotificationsOpen(true)}><Bell size={20} /></button><button className="store-avatar small-avatar avatar-button" aria-label="Account" onClick={() => demo ? setAccountOpen(true) : setProfileOpen(true)}>{initials(name)}</button></div></div>
+    <main className="main-area"><header className="topbar"><div className="breadcrumb"><span>Workspace</span><ChevronRight size={15} /><strong>{navItems.find((n) => n.id === page)?.label}</strong></div><div className="topbar-right"><div className="top-search"><Search size={17} /><input aria-label="Search order number" placeholder="Search orders..." value={search} onChange={(e) => { setSearch(e.target.value); setPage("orders"); setOrderFilter("all"); }} /></div><button className="top-notification" aria-label="Notification settings" onClick={() => setNotificationsOpen(true)}><Bell size={19} /><span /></button><div className="top-divider" /><div className="outlet-switcher"><button className="top-store" aria-expanded={outletMenuOpen} onClick={toggleOutletMenu}><div className="store-avatar small-avatar">{initials(name)}</div><div><strong>{name}</strong><span>{demo ? "Sample workspace" : user?.email}</span></div><ChevronDown size={15} /></button>{outletMenu}</div></div></header>
+      <div className="mobile-topbar"><div className="mobile-brand"><span className="brand-mark"><UtensilsCrossed size={18} /></span><strong>savour<span>.</span></strong><small>PARTNER</small></div><div className="mobile-top-actions"><button className="icon-button" aria-label="Notifications" onClick={() => setNotificationsOpen(true)}><Bell size={20} /></button><div className="outlet-switcher"><button className="store-avatar small-avatar avatar-button" aria-label={`Switch outlet, current: ${name}`} aria-expanded={outletMenuOpen} onClick={toggleOutletMenu}><Store size={15} /></button>{outletMenu}</div><button className="store-avatar small-avatar avatar-button" aria-label="Account" onClick={() => demo ? setAccountOpen(true) : setProfileOpen(true)}>{initials(name)}</button></div></div>
       {!online && <div className="connection-banner"><WifiOff size={16} /> You’re offline. New orders and changes won’t sync until you reconnect.</div>}
       {online && !demo && linkInvalid && <div className="connection-banner reconnect-banner"><Link2 size={16} /><div><strong>Marketplace connection needs attention.</strong><span>Orders and menu won’t sync until you reconnect. Open Business settings → Marketplace connection and generate a fresh pairing code.</span></div><button onClick={() => navigate("more")}>Open settings</button></div>}
       {online && syncError && !linkInvalid && <div className="connection-banner"><WifiOff size={16} /> {syncError} <button onClick={() => setRefreshKey((n) => n + 1)}>Retry</button></div>}
@@ -736,7 +757,7 @@ export default function MerchantApp() {
           <div className="info-box">{demo ? "Demo item sales are calculated from the items in your completed sample orders." : "Item sales are calculated by Marketplace from completed order snapshots, including modifier charges. Renamed or removed menu items still show the name customers ordered."}</div>
         </>}
       </>}
-        {page === "more" && <><div className="page-intro"><div><div className="eyebrow">MAKE IT YOURS <span>✳</span></div><h1>Business settings</h1><p>Manage the details that keep your business running.</p></div>{user && <button className="btn btn-outline" onClick={signOut}><LogOut size={16} /> Sign out</button>}</div>{!can(role, "settings.write") ? <Empty icon={<ShieldCheck size={25} />} title="Read-only access" text={`Your ${ROLE_LABELS[role].toLowerCase()} role cannot change business settings.`} /> : business ? <BusinessSettings key={business.id} business={business} onSave={saveSettings} /> : <Empty icon={<Store size={25} />} title="Finish setting up" text="Add your business details to manage your workspace." action={<button className="btn btn-primary" onClick={() => setSetupOpen(true)}>Continue setup</button>} />}</>}
+        {page === "more" && <><div className="page-intro"><div><div className="eyebrow">MAKE IT YOURS <span>✳</span></div><h1>Business settings</h1><p>Manage the details that keep this outlet running.</p></div><div className="settings-actions">{!demo && role === "owner" && <button className="btn btn-outline" onClick={() => setAddOutletOpen(true)}><Plus size={16} /> Add outlet</button>}{user && <button className="btn btn-outline" onClick={signOut}><LogOut size={16} /> Sign out</button>}</div></div>{!can(role, "settings.write") ? <Empty icon={<ShieldCheck size={25} />} title="Read-only access" text={`Your ${ROLE_LABELS[role].toLowerCase()} role cannot change business settings.`} /> : business ? <BusinessSettings key={business.id} business={business} onSave={saveSettings} /> : <Empty icon={<Store size={25} />} title="Finish setting up" text="Add your business details to manage your workspace." action={<button className="btn btn-primary" onClick={() => setSetupOpen(true)}>Continue setup</button>} />}</>}
         <footer className="page-footer"><span>Made for the people behind the plate <span>♥</span></span><span>© Savour Partner</span></footer>
       </div>
     </main>
@@ -746,6 +767,7 @@ export default function MerchantApp() {
     {accountOpen && <AccountModal onClose={() => setAccountOpen(false)} onSuccess={activate} />}
     {passwordOpen && <PasswordModal onClose={() => setPasswordOpen(false)} onSuccess={() => { setPasswordOpen(false); setToast("Password changed. Other devices were signed out."); }} />}
     {setupOpen && <SetupModal initial={business && !demo ? business : null} onClose={() => setSetupOpen(false)} onBusiness={(value) => { setBusiness(value); setDemo(false); }} />}
+    {addOutletOpen && <SetupModal createNew initial={null} onClose={() => { setAddOutletOpen(false); void refreshAfterOutlet(); }} onBusiness={() => { void refreshAfterOutlet(); }} />}
     {menuDialog && <MenuModal item={menuDialog.item} vendor={!!vendor} groups={modifierGroups} onClose={() => setMenuDialog(null)} onSave={saveMenu} />}
     {modifierGroupDialog && <ModifierGroupModal group={modifierGroupDialog.group} onClose={() => setModifierGroupDialog(null)} onSave={saveModifierGroup} />}
     {offerDialog && <OfferModal offer={offerDialog.offer} onClose={() => setOfferDialog(null)} onSave={saveOffer} />}

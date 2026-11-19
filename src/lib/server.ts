@@ -3,7 +3,7 @@ import { isIP } from "node:net";
 import { promisify } from "node:util";
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
-import { and, desc, eq, lt, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, lt, notInArray } from "drizzle-orm";
 import { db } from "@/db";
 import { auditLogs, businesses, sessions, staffMembers, users } from "@/db/schema";
 import { can, isStaffRole, type AppRole, type Permission } from "@/lib/roles";
@@ -115,22 +115,58 @@ export async function requireUser({ allowUnverified = false }: { allowUnverified
   }
   return user;
 }
-/** Resolve the outlet an account belongs to, either as its owner or as an active staff member. */
-export async function businessForUser(userId: string): Promise<{ business: typeof businesses.$inferSelect; role: AppRole } | null> {
-  const [owned] = await db.select().from(businesses).where(eq(businesses.ownerId, userId)).limit(1);
-  if (owned) return { business: owned, role: "owner" };
-  const [membership] = await db.select({ staff: staffMembers, business: businesses })
+export type BusinessAccess = { business: typeof businesses.$inferSelect; role: AppRole };
+
+/** Every outlet this account can open, as an owner or as an active staff member. Ownership wins on overlap. */
+export async function businessesForUser(userId: string): Promise<BusinessAccess[]> {
+  const owned = await db.select().from(businesses)
+    .where(eq(businesses.ownerId, userId)).orderBy(asc(businesses.createdAt));
+  const memberships = await db.select({ staff: staffMembers, business: businesses })
     .from(staffMembers)
     .innerJoin(businesses, eq(staffMembers.businessId, businesses.id))
     .where(and(eq(staffMembers.userId, userId), eq(staffMembers.status, "active")))
-    .limit(1);
-  if (!membership) return null;
-  return { business: membership.business, role: isStaffRole(membership.staff.role) ? membership.staff.role : "server" };
+    .orderBy(asc(businesses.createdAt));
+  const access = new Map<string, BusinessAccess>();
+  for (const business of owned) access.set(business.id, { business, role: "owner" });
+  for (const membership of memberships) {
+    if (!access.has(membership.business.id)) {
+      access.set(membership.business.id, {
+        business: membership.business,
+        role: isStaffRole(membership.staff.role) ? membership.staff.role : "server",
+      });
+    }
+  }
+  return [...access.values()];
+}
+
+/** Resolve the active outlet, falling back to the account's first available outlet for older sessions. */
+export async function businessForUser(userId: string, preferredBusinessId?: string | null): Promise<BusinessAccess | null> {
+  const available = await businessesForUser(userId);
+  if (!available.length) return null;
+  return (preferredBusinessId && available.find((entry) => entry.business.id === preferredBusinessId)) || available[0];
+}
+
+/** Browser-scoped outlet selection. Never derived from a client-supplied id on ordinary requests. */
+export async function sessionContext() {
+  const token = (await cookies()).get(COOKIE)?.value;
+  if (!token) return null;
+  const tokenHash = sha256(token);
+  const [row] = await db.select({ activeBusinessId: sessions.activeBusinessId })
+    .from(sessions).where(eq(sessions.tokenHash, tokenHash)).limit(1);
+  return row ? { tokenHash, activeBusinessId: row.activeBusinessId } : null;
+}
+
+/** Switches only this browser session; the business must already have been authorised by the caller. */
+export async function setActiveBusinessForSession(businessId: string) {
+  const context = await sessionContext();
+  if (!context) throw new ApiError("Please sign in to continue.", 401, "AUTH_REQUIRED");
+  await db.update(sessions).set({ activeBusinessId: businessId }).where(eq(sessions.tokenHash, context.tokenHash));
 }
 
 export async function requireBusiness(permission?: Permission) {
   const user = await requireUser();
-  const found = await businessForUser(user.id);
+  const context = await sessionContext();
+  const found = await businessForUser(user.id, context?.activeBusinessId);
   if (!found) throw new ApiError("Finish setting up your business first.", 404);
   if (permission && !can(found.role, permission)) {
     await recordAudit({ event: "staff.permission_denied", outcome: "denied", userId: user.id, businessId: found.business.id, detail: { permission, role: found.role } });

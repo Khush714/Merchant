@@ -12,8 +12,10 @@ const emails = [`restaurant-${run}@example.test`, `vendor-${run}@example.test`, 
 const missingEmail = `missing-${run}@example.test`;
 const emailHashes = [...emails, missingEmail].map((email) => `'${hash(email)}'`).join(",");
 const owners = `select id from users where email in (${emails.map((email) => `'${email}'`).join(",")})`;
-const shops = `select id from businesses where owner_id in (${owners})`;
-const testOrders = `select id from orders where business_id in (${shops})`;
+// Outlets created during the run are not in the startup snapshot, so track them for cleanup.
+const extraOutletIds = [];
+const shopIds = () => `select id from businesses where owner_id in (${owners})${extraOutletIds.length ? ` or id in (${extraOutletIds.map((id) => `'${id}'`).join(",")})` : ""}`;
+const testOrders = () => `select id from orders where business_id in (${shopIds()})`;
 function sql(statement) { execFileSync("psql", [database, "-v", "ON_ERROR_STOP=1", "-q", "-c", statement], { stdio: "pipe" }); }
 function scalar(statement) { return execFileSync("psql", [database, "-v", "ON_ERROR_STOP=1", "-t", "-A", "-c", statement], { encoding: "utf8" }).trim(); }
 function accountToken(value, email, purpose, expiry = "now() + interval '1 hour'") {
@@ -137,7 +139,7 @@ try {
   assert.equal(scalar(`select count(*) from account_tokens where user_id=(select id from users where email='${emails[1]}') and purpose='verify_email' and consumed_at is null`), "0");
   let marketplace = await request("/api/marketplace"); assert.ok(!marketplace.data.businesses.some((b) => [restaurant.business.id, vendor.business.id].includes(b.id)));
   // Simulate the trusted review system in a disposable local database.
-  sql(`update businesses set approval_status='approved' where id in (${shops})`);
+  sql(`update businesses set approval_status='approved' where id in (${shopIds()})`);
   for (const account of [restaurant, vendor]) { const opened = await request("/api/merchant/business", { method: "PATCH", cookie: account.cookie, body: { action: "availability", isOpen: true } }); assert.equal(opened.status, 200); }
   marketplace = await request("/api/marketplace"); assert.ok(marketplace.data.businesses.some((b) => b.id === restaurant.business.id)); assert.ok(marketplace.data.businesses.some((b) => b.id === vendor.business.id));
   const itemBody = { name: "Test meal", description: "", price: 25000, category: "Mains", imageUrl: "", dietary: "veg" };
@@ -389,18 +391,72 @@ try {
   assert.equal(scalar(`select count(*) from audit_logs where event='auth.verify_email' and outcome='success' and actor_user_id in (${owners})`), "2");
   assert.equal(scalar(`select count(*) from audit_logs where event='auth.reset_password' and outcome='success' and actor_user_id='${vendorId}' and detail->>'sessionsRevoked'='true'`), "1");
   assert.equal(scalar(`select count(*) from audit_logs where event='auth.forgot_password' and actor_email_hash='${hash(missingEmail)}' and detail->>'accountFound'='false'`), "1");
-  // A business created under the wrong account can be recovered by an authenticated server, with conflicts refused.
+  // A business created under the wrong account can be recovered by an authenticated server.
   assert.equal((await adminOwnerRequest({ businessId: vendor.business.id, email: missingEmail })).status, 404);
   const reassigned = await adminOwnerRequest({ businessId: vendor.business.id, email: emails[2] });
   assert.equal(reassigned.status, 200); assert.equal(reassigned.data.business.ownerId, reassignTarget.data.user.id);
   assert.equal((await request("/api/auth", { cookie: vendor.cookie })).data.business, null);
   assert.equal((await request("/api/auth", { cookie: reassignTarget.cookie })).data.business.id, vendor.business.id);
-  assert.equal((await adminOwnerRequest({ businessId: restaurant.business.id, email: emails[2] })).status, 409);
+  // The destination may already own other outlets; no conflict is raised.
+  assert.equal((await adminOwnerRequest({ businessId: restaurant.business.id, email: emails[2] })).status, 200);
+  assert.equal((await request("/api/auth", { cookie: reassignTarget.cookie })).data.businesses.length, 2);
+  assert.equal((await adminOwnerRequest({ businessId: restaurant.business.id, email: emails[0] })).status, 200);
   assert.equal((await adminOwnerRequest({ businessId: vendor.business.id, email: emails[1] })).status, 200);
   assert.equal(scalar(`select count(*) from audit_logs where event='admin.reassign_owner' and outcome='success' and business_id='${vendor.business.id}' and detail->>'newOwnerId'='${reassignTarget.data.user.id}'`), "1");
   assert.equal(scalar(`select count(*) from audit_logs where event='admin.reassign_owner' and outcome='failure' and business_id='${vendor.business.id}' and detail->>'reason'='target_not_found'`), "1");
-  console.log("PASS: security headers, opt-in verification gate, registration, approval, owner recovery, marketplace, concurrency, feedback and replies, offers and server-side discounts, staff roles and permissions, signed courier/payment webhooks, sessions, password change, hashed audit trail, email verification, single-use password reset and authoritative settlement mirror");
+  // Multi-outlet: one owner, two outlets, per-session selection and strict per-outlet scoping.
+  const ownerSession = await request("/api/auth", { method: "POST", body: { action: "login", email: emails[0], password: `T3st-${run}` } });
+  assert.equal(ownerSession.status, 200); assert.ok(ownerSession.cookie);
+  assert.equal(ownerSession.data.business.id, restaurant.business.id);
+  const secondOutlet = await request("/api/merchant/business", { method: "POST", cookie: ownerSession.cookie, body: { type: "restaurant", createNew: true } });
+  assert.equal(secondOutlet.status, 201);
+  extraOutletIds.push(secondOutlet.data.business.id);
+  assert.notEqual(secondOutlet.data.business.id, restaurant.business.id);
+  assert.equal(scalar(`select count(*) from businesses where owner_id=(select id from users where email='${emails[0]}')`), "2");
+  const afterAdd = await request("/api/auth", { cookie: ownerSession.cookie });
+  assert.equal(afterAdd.data.business.id, secondOutlet.data.business.id);
+  assert.equal(afterAdd.data.businesses.length, 2);
+  assert.ok(afterAdd.data.businesses.every((entry) => entry.role === "owner"));
+  // A fresh sign-in for the same owner starts on the default outlet: selection is per session.
+  const otherSession = await request("/api/auth", { method: "POST", body: { action: "login", email: emails[0], password: `T3st-${run}` } });
+  assert.equal(otherSession.status, 200); assert.ok(otherSession.cookie);
+  assert.equal(otherSession.data.business.id, restaurant.business.id);
+  assert.equal((await request("/api/merchant/active-business", { cookie: otherSession.cookie })).data.activeBusinessId, restaurant.business.id);
+  assert.ok((await request("/api/merchant/orders", { cookie: otherSession.cookie })).data.orders.length > 0);
+  const switchedOutlet = await request("/api/merchant/active-business", { method: "POST", cookie: otherSession.cookie, body: { businessId: secondOutlet.data.business.id } });
+  assert.equal(switchedOutlet.status, 200);
+  assert.equal(switchedOutlet.data.business.id, secondOutlet.data.business.id);
+  assert.equal(switchedOutlet.data.businesses.length, 2);
+  // Switching only changes this session and every scoped API reads the new outlet.
+  assert.equal((await request("/api/auth", { cookie: ownerSession.cookie })).data.business.id, secondOutlet.data.business.id);
+  const switchedOrders = await request("/api/merchant/orders", { cookie: otherSession.cookie });
+  assert.equal(switchedOrders.status, 200);
+  assert.equal(switchedOrders.data.orders.length, 0);
+  // A client cannot select an outlet it neither owns nor staffs.
+  const rejected = await request("/api/merchant/active-business", { method: "POST", cookie: otherSession.cookie, body: { businessId: vendor.business.id } });
+  assert.equal(rejected.status, 403);
+  assert.equal((await request("/api/auth", { cookie: otherSession.cookie })).data.business.id, secondOutlet.data.business.id);
+  // Staff access is per outlet with its own role.
+  const crossStaff = await request("/api/merchant/staff", { method: "POST", cookie: ownerSession.cookie, body: { email: emails[2], role: "server" } });
+  assert.equal(crossStaff.status, 201);
+  const staffSwitch = await request("/api/merchant/active-business", { method: "POST", cookie: reassignTarget.cookie, body: { businessId: secondOutlet.data.business.id } });
+  assert.equal(staffSwitch.status, 200);
+  assert.equal(staffSwitch.data.role, "server");
+  assert.equal((await request("/api/merchant/staff", { cookie: reassignTarget.cookie })).status, 403);
+  assert.equal((await request("/api/merchant/active-business", { method: "POST", cookie: reassignTarget.cookie, body: { businessId: restaurant.business.id } })).status, 403);
+  // Each outlet resolves its own pairing link; a linked branch never marks the other branch linked.
+  sql(`insert into business_marketplace_links (id, business_id, marketplace_restaurant_id, marketplace_restaurant_name, marketplace_restaurant_slug, access_token_encrypted) values ('${randomUUID()}', '${secondOutlet.data.business.id}', 999001, 'Smoke branch', 'smoke-branch', 'encrypted-not-used')`);
+  const linkedAuth = await request("/api/auth", { cookie: ownerSession.cookie });
+  assert.equal(linkedAuth.data.businesses.find((entry) => entry.id === secondOutlet.data.business.id).linked, true);
+  assert.equal(linkedAuth.data.businesses.find((entry) => entry.id === restaurant.business.id).linked, false);
+  sql(`delete from business_marketplace_links where business_id='${secondOutlet.data.business.id}'`);
+  // Owner recovery may now point an outlet at an account that already owns other outlets.
+  const multiOwnerReassignment = await adminOwnerRequest({ businessId: vendor.business.id, email: emails[0] });
+  assert.equal(multiOwnerReassignment.status, 200);
+  assert.equal((await request("/api/auth", { cookie: ownerSession.cookie })).data.businesses.length, 3);
+  assert.equal((await adminOwnerRequest({ businessId: vendor.business.id, email: emails[1] })).status, 200);
+  console.log("PASS: security headers, opt-in verification gate, registration, approval, owner recovery, marketplace, concurrency, feedback and replies, offers and server-side discounts, staff roles and permissions, multi-outlet ownership and session-scoped switching, signed courier/payment webhooks, sessions, password change, hashed audit trail, email verification, single-use password reset and authoritative settlement mirror");
 } finally {
-  try { sql(`begin; delete from audit_logs where actor_user_id in (${owners}) or business_id in (${shops}) or actor_email_hash in (${emailHashes}) or (event in ('auth.verify_email','auth.reset_password') and outcome='failure'); delete from account_tokens where user_id in (${owners}); delete from order_events where order_id in (${testOrders}); delete from order_items where order_id in (${testOrders}); delete from provider_events where order_id in (${testOrders}); delete from orders where business_id in (${shops}); delete from offers where business_id in (${shops}); delete from staff_members where business_id in (${shops}); delete from menu_items where business_id in (${shops}); delete from settlements where business_id in (${shops}); delete from sessions where user_id in (${owners}); delete from businesses where owner_id in (${owners}); delete from users where id in (${owners}); commit;`); }
+  try { sql(`begin; delete from audit_logs where actor_user_id in (${owners}) or business_id in (${shopIds()}) or actor_email_hash in (${emailHashes}) or (event in ('auth.verify_email','auth.reset_password') and outcome='failure'); delete from account_tokens where user_id in (${owners}); delete from order_events where order_id in (${testOrders()}); delete from order_items where order_id in (${testOrders()}); delete from provider_events where order_id in (${testOrders()}); delete from orders where business_id in (${shopIds()}); delete from offers where business_id in (${shopIds()}); delete from staff_members where business_id in (${shopIds()}); delete from menu_items where business_id in (${shopIds()}); delete from settlements where business_id in (${shopIds()}); delete from business_marketplace_links where business_id in (${shopIds()}); delete from sessions where user_id in (${owners}); delete from businesses where id in (${shopIds()}); delete from users where id in (${owners}); commit;`); }
   catch (error) { console.error("Could not clean up disposable test records:", error.message); process.exitCode = 1; }
 }
