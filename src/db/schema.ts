@@ -80,6 +80,10 @@ export const businesses = pgTable("businesses", {
   hoursEnabled: boolean("hours_enabled").notNull().default(false),
   opensAt: text("opens_at").notNull().default("09:00"),
   closesAt: text("closes_at").notNull().default("22:00"),
+  /** Overlays on `isOpen`; a timed closure expires on its own and leave days use IST dates. */
+  closureReason: text("closure_reason").notNull().default(""),
+  closureUntil: timestamp("closure_until", { withTimezone: true }),
+  scheduledLeaves: jsonb("scheduled_leaves").$type<{ date: string; reason: string }[]>().notNull().default([]),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [index("businesses_public_idx").on(table.approvalStatus, table.isOpen)]);

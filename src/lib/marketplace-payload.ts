@@ -17,6 +17,7 @@ const OFFER_CODE = /^[A-Z0-9_-]{3,40}$/;
 const ORDER_CODE = /^[A-Za-z0-9_-]{4,64}$/;
 const NUMERIC_ID = /^\d{1,12}$/;
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
+const CLOSURE_DATE = /^\d{4}-\d{2}-\d{2}$/;
 // Preserve ordinary multiline customer input; reject only real control characters.
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
 const MARKETPLACE_STATUSES = ["PLACED", "ACCEPTED", "PREPARING", "READY", "OUT_FOR_DELIVERY", "COMPLETED", "DELIVERED", "REJECTED", "CANCELLED"] as const;
@@ -159,6 +160,9 @@ export type RemoteRestaurant = {
   merchantClosesAt: string;
   merchantPickupEnabled: boolean;
   merchantDeliveryEnabled: boolean;
+  closureReason: string;
+  closureUntil: string | null;
+  scheduledLeaves: { date: string; reason: string }[];
 };
 
 export function parseRemoteRestaurant(value: unknown): RemoteRestaurant {
@@ -171,6 +175,17 @@ export function parseRemoteRestaurant(value: unknown): RemoteRestaurant {
     merchantClosesAt: text(row.merchantClosesAt, "closing time", 5, TIME),
     merchantPickupEnabled: bool(row.merchantPickupEnabled, "listing merchantPickupEnabled"),
     merchantDeliveryEnabled: bool(row.merchantDeliveryEnabled, "listing merchantDeliveryEnabled"),
+    closureReason: optionalText(row.closureReason, "closure reason", 120),
+    closureUntil: iso(row.closureUntil, "closure until", true),
+    scheduledLeaves: (row.scheduledLeaves === undefined || row.scheduledLeaves === null
+      ? []
+      : array(row.scheduledLeaves, "scheduled leaves", 60).map((entry, index) => {
+          const leave = object(entry, `scheduled leave ${index + 1}`);
+          return {
+            date: text(leave.date, `scheduled leave ${index + 1} date`, 10, CLOSURE_DATE),
+            reason: optionalText(leave.reason, `scheduled leave ${index + 1} reason`, 80),
+          };
+        })),
   };
 }
 
@@ -181,7 +196,7 @@ export function parseRemoteRestaurantResponse(payload: unknown): RemoteRestauran
   return parseRemoteRestaurant(root.restaurant);
 }
 
-type RemoteOwnedBusinessFields = Pick<Business, "name" | "approvalStatus" | "isOpen" | "hoursEnabled" | "opensAt" | "closesAt" | "pickupEnabled" | "deliveryEnabled">;
+type RemoteOwnedBusinessFields = Pick<Business, "name" | "approvalStatus" | "isOpen" | "hoursEnabled" | "opensAt" | "closesAt" | "pickupEnabled" | "deliveryEnabled" | "closureReason" | "closureUntil" | "scheduledLeaves">;
 
 /** Local business fields always come from Merchant; only authoritative listing fields are overwritten. */
 export function applyRemoteRestaurant<T extends object>(business: T, value: unknown): T & RemoteOwnedBusinessFields {
@@ -198,6 +213,9 @@ export function applyRemoteRestaurant<T extends object>(business: T, value: unkn
     closesAt: remote.merchantClosesAt,
     pickupEnabled: remote.merchantPickupEnabled,
     deliveryEnabled: remote.merchantDeliveryEnabled,
+    closureReason: remote.closureReason,
+    closureUntil: remote.closureUntil,
+    scheduledLeaves: remote.scheduledLeaves,
   };
 }
 

@@ -5,7 +5,7 @@ export type AppRole = "owner" | StaffRole;
 
 export type Permission =
   | "orders.read" | "orders.write"
-  | "menu.read" | "menu.write"
+  | "menu.read" | "menu.write" | "menu.availability"
   | "offers.read" | "offers.write"
   | "feedback.write"
   | "overview.read"
@@ -15,17 +15,17 @@ export type Permission =
   | "integration.write";
 
 export const ALL_PERMISSIONS: readonly Permission[] = [
-  "orders.read", "orders.write", "menu.read", "menu.write", "offers.read", "offers.write",
+  "orders.read", "orders.write", "menu.read", "menu.write", "menu.availability", "offers.read", "offers.write",
   "feedback.write", "overview.read", "settings.write", "settlements.read", "staff.write", "integration.write",
 ];
 
 export const ROLE_PERMISSIONS: Record<StaffRole, readonly Permission[]> = {
   // Managers run the outlet but cannot change who has access or rewire the Marketplace integration.
-  manager: ["orders.read", "orders.write", "menu.read", "menu.write", "offers.read", "offers.write", "feedback.write", "overview.read", "settings.write", "settlements.read"],
+  manager: ["orders.read", "orders.write", "menu.read", "menu.write", "menu.availability", "offers.read", "offers.write", "feedback.write", "overview.read", "settings.write", "settlements.read"],
   // Kitchen only works the order queue; it cannot see pricing, promotions or payouts.
   kitchen: ["orders.read", "orders.write", "overview.read"],
-  // Servers handle orders and item availability, and respond to customer feedback.
-  server: ["orders.read", "orders.write", "menu.read", "overview.read", "feedback.write"],
+  // Servers handle orders and item availability, but cannot edit prices or archive items.
+  server: ["orders.read", "orders.write", "menu.read", "menu.availability", "overview.read", "feedback.write"],
 };
 
 export const ROLE_LABELS: Record<AppRole, string> = { owner: "Owner", manager: "Manager", kitchen: "Kitchen", server: "Server" };

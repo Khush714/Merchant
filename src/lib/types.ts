@@ -8,6 +8,8 @@ export type Business = {
   category: string; registrationDetails: string; approvalStatus: "draft" | "pending" | "approved" | "rejected";
   isOpen: boolean; pickupEnabled: boolean; deliveryEnabled: boolean; hoursEnabled: boolean;
   opensAt: string; closesAt: string; updatedAt?: string;
+  /** Optional overlays on isOpen; older demo and cached records may omit them. */
+  closureReason?: string; closureUntil?: string | null; scheduledLeaves?: { date: string; reason: string }[];
 };
 export type AuthResponse = { user: AuthUser | null; business: Business | null; role: AppRole | null; verificationRequired: boolean };
 export type StaffMember = {

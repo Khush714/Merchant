@@ -48,7 +48,10 @@ export async function POST(request: NextRequest) {
 }
 export async function PATCH(request: NextRequest) {
   try {
-    sameOrigin(request); const { business } = await requireBusiness("menu.write"); const body = await readJson(request, BODY_LIMITS.menu);
+    sameOrigin(request); const body = await readJson(request, BODY_LIMITS.menu);
+    // Availability is the one menu change Servers are allowed to make; editing or
+    // archiving an item still requires full menu access.
+    const { business } = await requireBusiness(body.action === "availability" ? "menu.availability" : "menu.write");
     if (await getMarketplaceLink(business.id)) {
       const remote = await marketplaceFetch(business.id, "/api/integration/merchant/menu/items", { method: "PATCH", body: JSON.stringify(body) });
       const item = parseMarketplaceResponse(remote, (payload) => parseRemoteMenu(payload, business.id));

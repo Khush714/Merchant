@@ -2,11 +2,17 @@ import { eq } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { businesses } from "@/db/schema";
+import { cleanClosureReason, parseClosureUntil, parseScheduledLeaves } from "@/lib/closure";
 import { applyRemoteRestaurant, parseRemoteRestaurantResponse } from "@/lib/marketplace-payload";
 import { getMarketplaceLink, marketplaceFetch, parseMarketplaceResponse } from "@/lib/marketplace-bridge";
 import { ApiError, BODY_LIMITS, fail, readJson, requireBusiness, requireUser, sameOrigin, textValue } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
+
+/** Pure closure validation throws plain Errors; surface them as client errors. */
+function invalidClosure(error: unknown): ApiError {
+  return new ApiError(error instanceof Error ? error.message : "Invalid closure details.");
+}
 export async function GET(request: NextRequest) {
   try { const { business } = await requireBusiness("overview.read"); return NextResponse.json({ business }); }
   catch (error) { return fail(error, request); }
@@ -44,6 +50,53 @@ export async function PATCH(request: NextRequest) {
           )
         : null;
       const [updated] = await db.update(businesses).set({ isOpen: body.isOpen, updatedAt: new Date() }).where(eq(businesses.id, business.id)).returning();
+      return NextResponse.json({ business: remoteRestaurant ? applyRemoteRestaurant(updated, remoteRestaurant) : updated });
+    }
+    if (body.action === "closure") {
+      if (typeof body.closed !== "boolean") throw new ApiError("Invalid closure state.");
+      let reason: string, until: string | null;
+      try {
+        reason = cleanClosureReason(body.reason);
+        until = body.closed ? parseClosureUntil(body.until) : null;
+      } catch (error) { throw invalidClosure(error); }
+      if (body.closed && !until && !reason) throw new ApiError("Add a reason or choose when to reopen.");
+      // Closing leaves the base switch alone so timed closures expire by themselves;
+      // "Reopen now" is an explicit request to be open, so it restores that switch too.
+      const isOpen = body.closed ? business.isOpen : true;
+      if (isOpen && business.approvalStatus !== "approved" && !linked) {
+        throw new ApiError("Your listing must be approved before it can accept orders.", 403);
+      }
+      const remoteRestaurant = linked
+        ? parseMarketplaceResponse(
+            await marketplaceFetch(business.id, "/api/integration/merchant/business", {
+              method: "PATCH",
+              body: JSON.stringify({
+                isActive: isOpen, closureReason: reason, closureUntil: until,
+                scheduledLeaves: business.scheduledLeaves ?? [],
+              }),
+            }),
+            parseRemoteRestaurantResponse,
+          )
+        : null;
+      const [updated] = await db.update(businesses).set({
+        isOpen, closureReason: reason, closureUntil: until ? new Date(until) : null, updatedAt: new Date(),
+      }).where(eq(businesses.id, business.id)).returning();
+      return NextResponse.json({ business: remoteRestaurant ? applyRemoteRestaurant(updated, remoteRestaurant) : updated });
+    }
+    if (body.action === "leaves") {
+      let leaves;
+      try { leaves = parseScheduledLeaves(body.leaves); }
+      catch (error) { throw invalidClosure(error); }
+      const remoteRestaurant = linked
+        ? parseMarketplaceResponse(
+            await marketplaceFetch(business.id, "/api/integration/merchant/business", {
+              method: "PATCH",
+              body: JSON.stringify({ scheduledLeaves: leaves }),
+            }),
+            parseRemoteRestaurantResponse,
+          )
+        : null;
+      const [updated] = await db.update(businesses).set({ scheduledLeaves: leaves, updatedAt: new Date() }).where(eq(businesses.id, business.id)).returning();
       return NextResponse.json({ business: remoteRestaurant ? applyRemoteRestaurant(updated, remoteRestaurant) : updated });
     }
     if (body.action === "details") {
