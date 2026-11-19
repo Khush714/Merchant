@@ -29,6 +29,8 @@ export const BODY_LIMITS = {
   offers: 16 * 1024,
   staff: 4 * 1024,
   providerEvent: 8 * 1024,
+  compliance: 16 * 1024,
+  complianceDocument: 12 * 1024 * 1024,
 } as const;
 
 export function sha256(value: string) { return createHash("sha256").update(value).digest("hex"); }

@@ -14,6 +14,7 @@ const valid = validateProductionConfig(required);
 assert.deepEqual(valid.errors, [], "the documented production configuration must pass");
 assert.ok(valid.ok);
 assert.ok(valid.warnings.some((line) => line.includes("Shared rate limiting")), "optional gaps are warnings, not errors");
+assert.ok(valid.warnings.some((line) => line.includes("Private compliance document storage")), "storage is an optional warning");
 
 const ci = validateProductionConfig({
   ...required,
@@ -51,6 +52,17 @@ assert.ok(short.errors.some((line) => line.includes("at least 32 characters")));
 
 const halfRedis = validateProductionConfig({ ...required, UPSTASH_REDIS_REST_URL: "https://example.upstash.io" });
 assert.ok(halfRedis.errors.some((line) => line.includes("Redis REST URL and token")));
+
+const halfStorage = validateProductionConfig({ ...required, SUPABASE_URL: "https://example.supabase.co" });
+assert.ok(halfStorage.errors.some((line) => line.includes("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY")));
+
+const configuredStorage = validateProductionConfig({
+  ...required,
+  SUPABASE_URL: "https://example.supabase.co",
+  SUPABASE_SERVICE_ROLE_KEY: "d".repeat(60),
+});
+assert.deepEqual(configuredStorage.errors, []);
+assert.ok(!configuredStorage.warnings.some((line) => line.includes("Private compliance document storage")));
 
 const halfDispatch = validateProductionConfig({ ...required, COURIER_DISPATCH_SECRET: "c".repeat(40) });
 assert.ok(halfDispatch.errors.some((line) => line.includes("COURIER_DISPATCH_URL and COURIER_DISPATCH_SECRET")));

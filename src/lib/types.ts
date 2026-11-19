@@ -177,4 +177,130 @@ export type PublicOffer = {
   value: number; minOrder: number; maxDiscount: number | null;
   startsAt: string | null; endsAt: string | null;
 };
+
+// Compliance Phase 3 DTOs. All amounts are paise and all timestamps are ISO strings.
+export type ComplianceStatus = "not_submitted" | "submitted" | "expired" | "needs_attention" | "not_applicable";
+export type TaxRegime = "unregistered" | "regular" | "composition";
+export type ComplianceDocumentKind = "kyc_identity" | "kyc_address" | "fssai_license" | "gst_registration" | "pan_card" | "bank_proof";
+export type ComplianceAdvisory = {
+  key: string;
+  label: string;
+  detail: string;
+  severity: "info" | "warning";
+};
+export type ComplianceAgreementView = {
+  version: string;
+  title: string;
+  body: string;
+  contentHash: string;
+  effectiveAt: string;
+  accepted: boolean;
+  acceptedAt: string | null;
+};
+export type ComplianceSummary = {
+  legalName: string;
+  entityType: string;
+  gstin: string;
+  pan: string;
+  taxRegime: TaxRegime;
+  taxInclusive: boolean;
+  defaultTaxRateBps: number;
+  fssaiNumber: string;
+  fssaiExpiresAt: string | null;
+  kycStatus: ComplianceStatus;
+  fssaiStatus: ComplianceStatus;
+  taxStatus: ComplianceStatus;
+  payoutStatus: string;
+  payoutMethodLabel: string;
+  payoutReference: string;
+  payoutSyncedAt: string | null;
+  paired: boolean;
+  advisories: ComplianceAdvisory[];
+  agreement: ComplianceAgreementView;
+};
+export type ComplianceDocumentDto = {
+  id: string;
+  kind: ComplianceDocumentKind;
+  label: string;
+  fileName: string;
+  contentType: string;
+  byteSize: number;
+  sha256: string;
+  status: string;
+  expiresAt: string | null;
+  createdAt: string;
+  uploadedBy: string | null;
+};
+export type ComplianceOverview = {
+  compliance: ComplianceSummary;
+  documents: ComplianceDocumentDto[];
+  limits: { maxDocumentBytes: number; allowedContentTypes: string[] };
+};
+export type PayoutStatus = "not_configured" | "pending" | "configured" | "verified" | "action_required";
+export type RemotePayout = {
+  status: PayoutStatus;
+  methodLabel: string;
+  reference: string;
+  updatedAt: string;
+};
+export type CompliancePayoutView = {
+  available: boolean;
+  authoritative: boolean;
+  status: string;
+  methodLabel: string;
+  reference: string;
+  syncedAt: string | null;
+  message: string;
+};
+export type InvoiceSource = "marketplace" | "proforma";
+export type InvoiceStatus = "issued" | "proforma" | "cancelled" | "void";
+export type TaxInvoiceDto = {
+  id: string;
+  businessId: string;
+  invoiceNumber: string;
+  source: InvoiceSource;
+  externalId: string;
+  orderId: string;
+  recipientName: string;
+  recipientGstin: string;
+  taxableAmount: number;
+  cgstAmount: number;
+  sgstAmount: number;
+  igstAmount: number;
+  totalAmount: number;
+  currency: string;
+  status: InvoiceStatus;
+  issuedAt: string;
+  sourceUpdatedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+export type RemoteInvoice = {
+  externalId: string;
+  invoiceNumber: string;
+  orderId: string;
+  recipientName: string;
+  recipientGstin: string;
+  taxableAmount: number;
+  cgstAmount: number;
+  sgstAmount: number;
+  igstAmount: number;
+  totalAmount: number;
+  currency: string;
+  status: InvoiceStatus;
+  issuedAt: string;
+  updatedAt: string;
+};
+export type ComplianceInput = {
+  legalName?: string;
+  entityType?: string;
+  gstin?: string;
+  pan?: string;
+  taxRegime?: TaxRegime;
+  taxInclusive?: boolean;
+  defaultTaxRateBps?: number;
+  fssaiNumber?: string;
+  fssaiExpiresAt?: string | null;
+};
+
 export const money = (amount: number) => new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: amount % 100 ? 2 : 0 }).format(amount / 100);

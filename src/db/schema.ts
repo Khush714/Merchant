@@ -300,3 +300,112 @@ export const settlements = pgTable("settlements", {
   uniqueIndex("settlements_business_order_idx").on(table.businessId, table.marketplaceOrderId),
 ]);
 
+
+/**
+ * Outlet-scoped compliance metadata. Statuses describe submission state only;
+ * verification and payout setup remain authoritative in Marketplace.
+ */
+export const businessCompliance = pgTable("business_compliance", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  legalName: text("legal_name").notNull().default(""),
+  entityType: text("entity_type").notNull().default(""),
+  gstin: text("gstin").notNull().default(""),
+  pan: text("pan").notNull().default(""),
+  taxRegime: text("tax_regime").notNull().default("unregistered"),
+  taxInclusive: boolean("tax_inclusive").notNull().default(true),
+  defaultTaxRateBps: integer("default_tax_rate_bps").notNull().default(0),
+  fssaiNumber: text("fssai_number").notNull().default(""),
+  fssaiExpiresAt: timestamp("fssai_expires_at", { withTimezone: true }),
+  kycStatus: text("kyc_status").notNull().default("not_submitted"),
+  fssaiStatus: text("fssai_status").notNull().default("not_submitted"),
+  taxStatus: text("tax_status").notNull().default("not_submitted"),
+  payoutStatus: text("payout_status").notNull().default("not_configured"),
+  // Masked label and Marketplace reference only; no raw bank or UPI details are stored here.
+  payoutMethodLabel: text("payout_method_label").notNull().default(""),
+  payoutReference: text("payout_reference").notNull().default(""),
+  payoutSyncedAt: timestamp("payout_synced_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("business_compliance_business_idx").on(table.businessId),
+]);
+
+/** Private document vault. The file bytes live in a private Supabase Storage bucket. */
+export const complianceDocuments = pgTable("compliance_documents", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  kind: text("kind").notNull(),
+  fileName: text("file_name").notNull(),
+  contentType: text("content_type").notNull(),
+  byteSize: integer("byte_size").notNull(),
+  sha256: text("sha256").notNull(),
+  storageBucket: text("storage_bucket").notNull().default("merchant-compliance"),
+  storageKey: text("storage_key").notNull(),
+  status: text("status").notNull().default("active"),
+  uploadedBy: uuid("uploaded_by").references(() => users.id, { onDelete: "set null" }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("compliance_documents_business_idx").on(table.businessId),
+  index("compliance_documents_business_kind_idx").on(table.businessId, table.kind),
+]);
+
+/** Versioned, append-only agreement copy. Existing versions are never edited. */
+export const complianceAgreements = pgTable("compliance_agreements", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  version: text("version").notNull(),
+  title: text("title").notNull(),
+  body: text("body").notNull(),
+  contentHash: text("content_hash").notNull(),
+  effectiveAt: timestamp("effective_at", { withTimezone: true }).notNull(),
+  publishedAt: timestamp("published_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("compliance_agreements_version_idx").on(table.version),
+]);
+
+/** One acceptance per outlet and agreement version; a new version requires a new acceptance. */
+export const complianceAgreementAcceptances = pgTable("compliance_agreement_acceptances", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  agreementId: uuid("agreement_id").notNull().references(() => complianceAgreements.id),
+  userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+  acceptedAt: timestamp("accepted_at", { withTimezone: true }).notNull().defaultNow(),
+  ipHash: text("ip_hash").notNull().default(""),
+  userAgentHash: text("user_agent_hash").notNull().default(""),
+}, (table) => [
+  uniqueIndex("compliance_agreement_acceptances_business_agreement_idx").on(table.businessId, table.agreementId),
+  index("compliance_agreement_acceptances_business_idx").on(table.businessId),
+]);
+
+/** Marketplace-issued invoices are mirrored; local documents are explicitly pro forma. */
+export const taxInvoices = pgTable("tax_invoices", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  invoiceNumber: text("invoice_number").notNull(),
+  source: text("source").notNull(),
+  externalId: text("external_id").notNull().default(""),
+  orderId: text("order_id").notNull().default(""),
+  settlementId: uuid("settlement_id").references(() => settlements.id, { onDelete: "set null" }),
+  recipientName: text("recipient_name").notNull().default(""),
+  recipientGstin: text("recipient_gstin").notNull().default(""),
+  taxableAmount: integer("taxable_amount").notNull().default(0),
+  cgstAmount: integer("cgst_amount").notNull().default(0),
+  sgstAmount: integer("sgst_amount").notNull().default(0),
+  igstAmount: integer("igst_amount").notNull().default(0),
+  totalAmount: integer("total_amount").notNull().default(0),
+  currency: text("currency").notNull().default("INR"),
+  status: text("status").notNull().default("issued"),
+  issuedAt: timestamp("issued_at", { withTimezone: true }).notNull().defaultNow(),
+  sourceUpdatedAt: timestamp("source_updated_at", { withTimezone: true }),
+  storageBucket: text("storage_bucket").notNull().default("merchant-compliance"),
+  storageKey: text("storage_key").notNull().default(""),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("tax_invoices_business_issued_idx").on(table.businessId, table.issuedAt),
+  index("tax_invoices_business_external_idx").on(table.businessId, table.source, table.externalId),
+  uniqueIndex("tax_invoices_business_invoice_idx").on(table.businessId, table.invoiceNumber),
+]);

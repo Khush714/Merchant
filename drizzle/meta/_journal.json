@@ -127,6 +127,13 @@
       "when": 1796500000004,
       "tag": "0017_supabase_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1795315200002,
+      "tag": "0018_compliance_money_docs",
+      "breakpoints": true
     }
   ]
 }
