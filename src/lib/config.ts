@@ -75,9 +75,11 @@ export function validateProductionConfig(env: NodeJS.ProcessEnv = process.env, o
       const url = new URL(databaseUrl);
       if (url.protocol !== "postgres:" && url.protocol !== "postgresql:") errors.push("DATABASE_URL must be a PostgreSQL connection string.");
       if (!url.hostname) errors.push("DATABASE_URL must include a host.");
-      // Supabase (like any hosted PostgreSQL) rejects plaintext connections. Node's
-      // driver already upgrades `sslmode=require` to verified TLS by default.
-      const sslmode = (url.searchParams.get("sslmode") ?? "").toLowerCase();
+      // The connection layer upgrades a bare hosted URL to verified TLS automatically.
+      // Validate that prepared string so operators need not duplicate sslmode in config,
+      // while still rejecting an explicit sslmode=disable (or a bare `ssl` flag).
+      const prepared = new URL(prepareDatabaseConnectionString(databaseUrl));
+      const sslmode = (prepared.searchParams.get("sslmode") ?? "").toLowerCase();
       if (production && !isLoopbackUrl(url) && !(sslmode === "require" || sslmode === "verify-full" || sslmode === "verify-ca")) {
         errors.push("DATABASE_URL must use sslmode=require or verify-full for a hosted PostgreSQL connection.");
       }

@@ -30,8 +30,10 @@ for (const key of ["DATABASE_URL", "APP_ORIGIN", "MARKETPLACE_API_URL", "MERCHAN
 }
 assert.equal(missing.ok, false);
 
-const plaintextDb = validateProductionConfig({ ...required, DATABASE_URL: "postgresql://user:pass@db.example.com:5432/app" });
-assert.ok(plaintextDb.errors.some((line) => line.includes("DATABASE_URL must use sslmode")), "hosted databases must use TLS");
+const bareDb = validateProductionConfig({ ...required, DATABASE_URL: "postgresql://user:pass@db.example.com:5432/app" });
+assert.deepEqual(bareDb.errors, [], "a bare hosted URL is upgraded to TLS by the connection layer");
+const disabledDb = validateProductionConfig({ ...required, DATABASE_URL: "postgresql://user:pass@db.example.com:5432/app?sslmode=disable" });
+assert.ok(disabledDb.errors.some((line) => line.includes("DATABASE_URL must use sslmode")), "an explicit sslmode=disable is rejected");
 const verifiedDb = validateProductionConfig({ ...required, DATABASE_URL: "postgresql://user:pass@db.example.com:5432/app?sslmode=verify-full" });
 assert.deepEqual(verifiedDb.errors, [], "verify-full is accepted");
 const localDb = validateProductionConfig({ ...required, DATABASE_URL: "postgresql://postgres:postgres@127.0.0.1:5432/app_db", VERCEL: "1" });
