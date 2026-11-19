@@ -74,6 +74,7 @@ assert.ok(badHeader.errors.some((line) => line.includes("TRUSTED_PROXY_IP_HEADER
 
 const hosted = new URL(prepareDatabaseConnectionString("postgresql://user:pass@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres"));
 assert.equal(hosted.searchParams.get("sslmode"), "require", "hosted connections get TLS even from a bare pooler URL");
+assert.equal(hosted.searchParams.get("uselibpqcompat"), "true", "TLS uses libpq semantics for self-signed Postgres certificates");
 assert.equal(hosted.searchParams.get("application_name"), "savour-partner");
 const local = new URL(prepareDatabaseConnectionString("postgresql://postgres:postgres@127.0.0.1:5432/app_db"));
 assert.equal(local.searchParams.get("sslmode"), null, "loopback development stays plaintext");

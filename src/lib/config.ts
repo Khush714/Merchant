@@ -13,14 +13,18 @@ function isLoopbackUrl(url: URL): boolean {
 }
 
 /**
- * Normalise the private database URL for `pg`: hosted databases get explicit TLS
- * (the driver already maps `sslmode=require` to verified TLS), loopback stays
- * plaintext, and every connection is labelled in the pooler's logs.
+ * Normalise the private database URL for `pg`: hosted databases get encrypted TLS,
+ * loopback stays plaintext, and every connection is labelled in the pooler's logs.
+ * `uselibpqcompat` keeps libpq semantics for `sslmode=require` (encrypt without
+ * certificate verification), matching managed Postgres endpoints that present a
+ * self-signed certificate; newer pg-connection-string versions otherwise alias
+ * `require` to `verify-full` and reject those chains.
  */
 export function prepareDatabaseConnectionString(raw: string): string {
   const url = new URL(raw);
   if (!isLoopbackUrl(url) && !url.searchParams.has("sslmode") && !url.searchParams.has("ssl")) {
     url.searchParams.set("sslmode", "require");
+    url.searchParams.set("uselibpqcompat", "true");
   }
   url.searchParams.set("application_name", "savour-partner");
   return url.toString();
