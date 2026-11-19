@@ -73,6 +73,17 @@ export type FeedbackSummary = {
   badOrders: number;
   pendingReplies: number;
 };
+/** A review row in the merchant inbox. For paired listings this is Marketplace-owned. */
+export type Review = {
+  orderCode: string;
+  rating: number | null;
+  review: string;
+  feedbackAt: string | null;
+  merchantResponse: string;
+  merchantRespondedAt: string | null;
+};
+export type ReviewTheme = { key: string; label: string; count: number; averageRating: number | null };
+export type ReviewInbox = { reviews: Review[]; summary: FeedbackSummary; themes: ReviewTheme[] };
 export type DiscountType = "percent" | "flat";
 /** Merchant view, including performance totals aggregated from redeemed orders. */
 export type Offer = {

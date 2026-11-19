@@ -7,7 +7,7 @@
  * this module free of `server-only` imports lets the same rules run in tests.
  */
 
-import type { Business, FeedbackSummary, MenuItem, Offer, Order, OrderStatus, RevenueSummary } from "@/lib/types";
+import type { Business, FeedbackSummary, MenuItem, Offer, Order, OrderStatus, Review, ReviewInbox, ReviewTheme, RevenueSummary } from "@/lib/types";
 
 export const FEEDBACK_WINDOW_DAYS = 30;
 export const MAX_REVIEW_CHARS = 500;
@@ -143,6 +143,36 @@ export function parseRemoteFeedbackSummary(value: unknown): FeedbackSummary {
     badOrders: integer(row.badOrders, "badOrders", 0, 10_000_000),
     pendingReplies: integer(row.pendingReplies, "pendingReplies", 0, 10_000_000),
   };
+}
+
+/** Strict inbox parser: a paired response is either complete or treated as a bad upstream shape. */
+export function parseRemoteFeedbackInbox(payload: unknown): ReviewInbox {
+  const root = object(payload, "Marketplace response");
+  if (root.ok !== true) fail("Marketplace review request failed.");
+  const reviews = array(root.reviews, "Marketplace reviews", 100).map((value): Review => {
+    const row = object(value, "Marketplace review");
+    return {
+      orderCode: text(row.orderCode, "review orderCode", 100, ORDER_CODE),
+      rating: nullableInteger(row.rating, "review rating", 1, 5),
+      review: optionalText(row.review, "review text", MAX_REVIEW_CHARS),
+      feedbackAt: iso(row.feedbackAt, "review feedbackAt", true),
+      merchantResponse: optionalText(row.merchantResponse, "review reply", MAX_REVIEW_CHARS),
+      merchantRespondedAt: iso(row.merchantRespondedAt, "review merchantRespondedAt", true),
+    };
+  });
+  const themes = array(root.themes, "Marketplace review themes", 10).map((value): ReviewTheme => {
+    const row = object(value, "Marketplace review theme");
+    const rawAverage = row.averageRating;
+    return {
+      key: text(row.key, "theme key", 40, /^[a-z0-9_-]{1,40}$/),
+      label: text(row.label, "theme label", 60),
+      count: integer(row.count, "theme count", 0, 10_000_000),
+      averageRating: rawAverage === undefined || rawAverage === null || rawAverage === ""
+        ? null
+        : integer(Math.round(Number(rawAverage) * 10), "theme averageRating", 0, 50) / 10,
+    };
+  });
+  return { reviews, summary: parseRemoteFeedbackSummary(object(root.summary, "Marketplace feedback summary")), themes };
 }
 
 /** Minimal acknowledgement parser for link checks, deletes and other write proxies. */

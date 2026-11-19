@@ -1,13 +1,37 @@
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq, isNotNull } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { orderEvents, orders } from "@/db/schema";
-import { MAX_REVIEW_CHARS, feedbackDto } from "@/lib/feedback";
-import { getMarketplaceLink, marketplaceFetch, parseMarketplaceResponse, parseRemoteFeedbackReply } from "@/lib/marketplace-bridge";
+import { MAX_REVIEW_CHARS, feedbackDto, localFeedbackInbox } from "@/lib/feedback";
+import { getMarketplaceLink, marketplaceFetch, parseMarketplaceResponse, parseRemoteFeedbackInbox, parseRemoteFeedbackReply } from "@/lib/marketplace-bridge";
 import { ApiError, BODY_LIMITS, fail, readJson, requireBusiness, sameOrigin, textValue } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Reviews inbox: paired listings read Marketplace; unpaired listings use local orders. */
+export async function GET(request: NextRequest) {
+  try {
+    sameOrigin(request);
+    const { business } = await requireBusiness("feedback.write");
+    if (await getMarketplaceLink(business.id)) {
+      const remote = await marketplaceFetch(business.id, "/api/integration/merchant/orders/feedback/list");
+      const inbox = parseMarketplaceResponse(remote, parseRemoteFeedbackInbox);
+      return NextResponse.json({ ok: true, ...inbox, proxied: true }, { headers: { "Cache-Control": "no-store" } });
+    }
+    const rows = await db.select({
+      id: orders.id,
+      rating: orders.rating,
+      review: orders.review,
+      feedbackAt: orders.feedbackAt,
+      merchantResponse: orders.merchantResponse,
+      merchantRespondedAt: orders.merchantRespondedAt,
+    }).from(orders)
+      .where(and(eq(orders.businessId, business.id), isNotNull(orders.feedbackAt)))
+      .orderBy(desc(orders.feedbackAt)).limit(50);
+    return NextResponse.json({ ok: true, ...localFeedbackInbox(rows), proxied: false }, { headers: { "Cache-Control": "no-store" } });
+  } catch (error) { return fail(error, request); }
+}
 
 /** A single, immutable public reply to a customer's order review. */
 export async function PATCH(request: NextRequest) {

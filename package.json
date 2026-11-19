@@ -18,9 +18,10 @@
     "test:revenue": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/revenue-range-test.mjs",
     "test:csv": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/csv-test.mjs",
     "test:closure": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/closure-test.mjs",
+    "test:reviews": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/review-inbox-test.mjs",
     "test:roles": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/role-permissions-test.mjs",
     "audit:prune": "node scripts/prune-audit-logs.mjs",
-    "test": "npm run test:settlements && npm run test:provider-events && npm run test:urls && npm run test:config && node scripts/integration-test.mjs && npm run test:settlement-sync && npm run test:paired-flow && npm run test:revenue && npm run test:csv && npm run test:closure && npm run test:roles"
+    "test": "npm run test:settlements && npm run test:provider-events && npm run test:urls && npm run test:config && node scripts/integration-test.mjs && npm run test:settlement-sync && npm run test:paired-flow && npm run test:revenue && npm run test:csv && npm run test:closure && npm run test:reviews && npm run test:roles"
   },
   "dependencies": {
     "baseline-browser-mapping": "^2.11.33",

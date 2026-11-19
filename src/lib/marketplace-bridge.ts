@@ -12,6 +12,7 @@ import { isLoopbackUrl } from "@/lib/urls";
 /** Paired route handlers share the pure parsers so every upstream response is checked. */
 export {
   applyRemoteRestaurant,
+  parseRemoteFeedbackInbox,
   parseRemoteFeedbackReply,
   parseRemoteMenu,
   parseRemoteMenuItems,

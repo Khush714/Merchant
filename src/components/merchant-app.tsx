@@ -11,18 +11,21 @@ import { MARKETPLACE_LINK_INVALID } from "@/lib/marketplace-link-status";
 import { discountLabel, isOfferLive } from "@/lib/offers";
 import { normalizeRevenueRange, rangeForPreset, revenueRangeLabel, REVENUE_PRESETS, type RevenuePreset, type RevenueRange } from "@/lib/revenue";
 import { can, ROLE_DESCRIPTIONS, ROLE_LABELS, STAFF_ROLES, type AppRole, type Permission, type StaffRole } from "@/lib/roles";
-import { money, type AuthResponse, type AuthUser, type Business, type MenuItem, type Offer, type OfferInput, type Order, type OrderStatus, type Overview, type RevenueSummary, type StaffMember } from "@/lib/types";
+import { localReviewThemes } from "@/lib/review-themes";
+import { money, type AuthResponse, type AuthUser, type Business, type FeedbackSummary, type MenuItem, type Offer, type OfferInput, type Order, type OrderStatus, type Overview, type Review, type ReviewInbox, type ReviewTheme, type RevenueSummary, type StaffMember } from "@/lib/types";
 
-type Page = "home" | "orders" | "menu" | "offers" | "staff" | "earnings" | "more";
+type Page = "home" | "orders" | "menu" | "offers" | "reviews" | "staff" | "earnings" | "more";
 type User = AuthUser;
 type AuthData = AuthResponse;
 type Filter = "active" | "all" | "new" | "accepted" | "preparing" | "ready" | "out_for_delivery" | "completed" | "cancelled" | "feedback";
 const emptyOverview: Overview = { counts: { new: 0, accepted: 0, preparing: 0, ready: 0, out_for_delivery: 0, completed: 0, cancelled: 0, rejected: 0 }, todaySales: 0, todayOrders: 0, completedToday: 0, settlements: [], settlementSync: { linked: false, status: "idle", lastSyncedAt: null }, feedback: { available: true, windowDays: 30, averageRating: null, reviewCount: 0, badOrders: 0, pendingReplies: 0 } };
+const emptyFeedback: FeedbackSummary = { available: true, windowDays: 30, averageRating: null, reviewCount: 0, badOrders: 0, pendingReplies: 0 };
 const navItems: { id: Page; label: string; icon: typeof Home; permission?: Permission }[] = [
   { id: "home", label: "Home", icon: Home },
   { id: "orders", label: "Orders", icon: ShoppingBag, permission: "orders.read" },
   { id: "menu", label: "Menu", icon: BookOpen, permission: "menu.read" },
   { id: "offers", label: "Offers", icon: BadgePercent, permission: "offers.read" },
+  { id: "reviews", label: "Reviews", icon: Star, permission: "feedback.write" },
   { id: "staff", label: "Staff", icon: Users, permission: "staff.write" },
   { id: "earnings", label: "Earnings", icon: CircleDollarSign, permission: "settlements.read" },
   { id: "more", label: "More", icon: LayoutGrid },
@@ -70,12 +73,13 @@ export default function MerchantApp() {
   const [syncError, setSyncError] = useState(""), [toast, setToast] = useState(""), [busyStore, setBusyStore] = useState(false), [busyItem, setBusyItem] = useState(""), [refreshKey, setRefreshKey] = useState(0), [soundEnabled, setSoundEnabled] = useState(() => typeof window !== "undefined" && localStorage.getItem("savour-sound") === "on"), [notificationPermission, setNotificationPermission] = useState(() => typeof Notification !== "undefined" ? Notification.permission : "default"), [menuError, setMenuError] = useState(""), [resendingVerification, setResendingVerification] = useState(false), [settlementBusy, setSettlementBusy] = useState(false), [feedbackBusy, setFeedbackBusy] = useState(""), [linkInvalid, setLinkInvalid] = useState(false);
   const [earningsTab, setEarningsTab] = useState<"overview" | "revenue">("overview"), [revenuePreset, setRevenuePreset] = useState<RevenuePreset>("1m"), [revenueRange, setRevenueRange] = useState<RevenueRange>(() => rangeForPreset("1m"));
   const [revenue, setRevenue] = useState<RevenueSummary | null>(null), [revenueBusy, setRevenueBusy] = useState(false), [revenueError, setRevenueError] = useState("");
+  const [reviews, setReviews] = useState<Review[]>([]), [reviewSummary, setReviewSummary] = useState<FeedbackSummary>(emptyFeedback), [reviewThemes, setReviewThemes] = useState<ReviewTheme[]>([]), [reviewsBusy, setReviewsBusy] = useState(false), [reviewsError, setReviewsError] = useState(""), [reviewReplyBusy, setReviewReplyBusy] = useState("");
   const lastNewCount = useRef<number | null>(null), lastNewId = useRef<string | null>(null), actionBusyRef = useRef<Set<string>>(new Set());
   const [actionBusy, setActionBusy] = useState<Record<string, boolean>>({});
 
   const activate = useCallback((data: AuthData) => {
     if (!data.user) return;
-    setDemo(false); setUser(data.user); setVerificationRequired(data.verificationRequired); setBusiness(data.business); setRole(data.role ?? "owner"); setOrders([]); setItems([]); setOverview(emptyOverview); setOffers([]); setOffersError(""); setStaff([]); setStaffError(""); setOfferFilter("active"); setPage("home"); setAccountOpen(false); setLinkInvalid(false); lastNewCount.current = null; lastNewId.current = null;
+    setDemo(false); setUser(data.user); setVerificationRequired(data.verificationRequired); setBusiness(data.business); setRole(data.role ?? "owner"); setOrders([]); setItems([]); setOverview(emptyOverview); setOffers([]); setOffersError(""); setReviews([]); setReviewSummary(emptyFeedback); setReviewThemes([]); setReviewsError(""); setStaff([]); setStaffError(""); setOfferFilter("active"); setPage("home"); setAccountOpen(false); setLinkInvalid(false); lastNewCount.current = null; lastNewId.current = null;
     if (!data.business || data.business.approvalStatus === "draft") setSetupOpen(true);
   }, []);
   // Proactively check the pairing token so a dead link is obvious before any sync call fails.
@@ -93,7 +97,7 @@ export default function MerchantApp() {
   useEffect(() => {
     const reset = () => {
       setDemo(true); setUser(null); setVerificationRequired(false); setBusiness(demoBusiness); setRole("owner");
-      setOrders(makeDemoOrders()); setItems(demoMenu); setOverview(emptyOverview); setOffers(makeDemoOffers(makeDemoOrders()));
+      setOrders(makeDemoOrders()); setItems(demoMenu); setOverview(emptyOverview); setOffers(makeDemoOffers(makeDemoOrders())); setReviews([]); setReviewSummary(emptyFeedback); setReviewThemes([]); setReviewsError("");
       setPage("home"); setAccountOpen(false); setProfileOpen(false); setSetupOpen(false); setOfferFilter("active");
       setSyncError(""); setMenuError(""); setOffersError(""); setLinkInvalid(false); setToast("Your session expired. Please sign in again.");
     };
@@ -163,6 +167,18 @@ export default function MerchantApp() {
     adjustments: totals.adjustments + settlement.adjustmentAmount,
   }), { net: 0, gross: 0, fees: 0, refunds: 0, adjustments: 0 }), [paidSettlements]);
   const revenueForView = demo ? demoRevenue(orders, revenueRange) : revenue;
+  const reviewInboxForView = useMemo<ReviewInbox>(() => {
+    if (!demo) return { reviews, summary: reviewSummary, themes: reviewThemes };
+    const sample = orders.filter((order) => order.feedbackAt).map((order): Review => ({
+      orderCode: order.id,
+      rating: order.rating,
+      review: order.review,
+      feedbackAt: order.feedbackAt,
+      merchantResponse: order.merchantResponse,
+      merchantRespondedAt: order.merchantRespondedAt,
+    }));
+    return { reviews: sample, summary: stats.feedback, themes: localReviewThemes(sample) };
+  }, [demo, orders, reviews, reviewSummary, reviewThemes, stats.feedback]);
   useEffect(() => {
     if (page !== "earnings" || earningsTab !== "revenue" || demo || !business?.id) return;
     let stopped = false;
@@ -183,6 +199,23 @@ export default function MerchantApp() {
       .finally(() => { if (!stopped) setRevenueBusy(false); });
     return () => { stopped = true; controller.abort(); };
   }, [page, earningsTab, demo, orders, business?.id, revenueRange, refreshKey]);
+  useEffect(() => {
+    if (page !== "reviews" || demo || !business?.id || !can(role, "feedback.write") || linkInvalid) return;
+    let stopped = false;
+    const controller = new AbortController();
+    api<ReviewInbox>("/api/merchant/feedback", { signal: controller.signal })
+      .then((data) => {
+        if (stopped) return;
+        setReviews(data.reviews); setReviewSummary(data.summary); setReviewThemes(data.themes); setReviewsError("");
+      })
+      .catch((error) => {
+        if (stopped || (error instanceof Api401Error && error.sessionExpired)) return;
+        if (error instanceof Api401Error && error.code === MARKETPLACE_LINK_INVALID) setLinkInvalid(true);
+        setReviewsError(error instanceof Error ? error.message : "Could not load reviews.");
+      })
+      .finally(() => { if (!stopped) setReviewsBusy(false); });
+    return () => { stopped = true; controller.abort(); };
+  }, [page, demo, business?.id, role, refreshKey, linkInvalid]);
   const visibleNav = navItems.filter((item) => (!vendor || item.id !== "more") && (!item.permission || can(role, item.permission)));
   useEffect(() => {
     if (demo || !business?.id || !can(role, "staff.write")) return;
@@ -382,6 +415,28 @@ export default function MerchantApp() {
       setToast(error instanceof Error ? error.message : "Could not send your reply.");
     } finally { setFeedbackBusy(""); }
   }
+  async function submitReviewReply(review: Review, response: string) {
+    if (!can(role, "feedback.write") || !response.trim() || reviewReplyBusy === review.orderCode) return;
+    const repliedAt = new Date().toISOString();
+    if (demo) {
+      setOrders((current) => current.map((order) => order.id === review.orderCode ? { ...order, merchantResponse: response.trim(), merchantRespondedAt: repliedAt } : order));
+      setToast("Your reply was added.");
+      return;
+    }
+    setReviewReplyBusy(review.orderCode);
+    try {
+      const data = await api<{ feedback: { merchantResponse: string; merchantRespondedAt: string | null } | null; proxied: boolean }>("/api/merchant/feedback", { method: "PATCH", body: JSON.stringify({ id: review.orderCode, orderCode: review.orderCode, response }) });
+      const reply = data.feedback?.merchantResponse ?? response.trim();
+      const at = data.feedback?.merchantRespondedAt ?? repliedAt;
+      setReviews((current) => current.map((row) => row.orderCode === review.orderCode ? { ...row, merchantResponse: reply, merchantRespondedAt: at } : row));
+      if (!review.merchantResponse) setReviewSummary((current) => ({ ...current, pendingReplies: Math.max(0, current.pendingReplies - 1) }));
+      setToast(data.proxied ? "Reply sent to Marketplace." : "Your reply was added.");
+      if (data.proxied) setRefreshKey((n) => n + 1);
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "Could not send your reply.");
+    } finally { setReviewReplyBusy(""); }
+  }
+  function refreshReviews() { if (demo || linkInvalid) return; setReviewsBusy(true); setRefreshKey((n) => n + 1); }
   async function saveOffer(input: OfferInput, id?: string) {
     if (demo) {
       const stamp = new Date().toISOString();
@@ -482,6 +537,18 @@ export default function MerchantApp() {
           </aside>}</div>
         </>}
         {page === "orders" && <><div className="page-intro"><div><div className="eyebrow">YOUR ORDER BOOK <span>✳</span></div><h1>Orders</h1><p>Everything you need to keep your orders moving.</p></div><button className="btn btn-outline" onClick={() => setRefreshKey((n) => n + 1)}>Refresh orders</button></div><section className="orders-page"><div className="filter-tabs">{filters.map((filter) => <button key={filter.id} className={orderFilter === filter.id ? "selected" : ""} onClick={() => { setOrderFilter(filter.id); setOrderPage(1); }}>{filter.label}{filter.id === "new" && stats.counts.new > 0 && <span>{stats.counts.new}</span>}</button>)}</div><div className="order-tools"><div className="search-field"><Search size={17} /><input placeholder="Search order number" aria-label="Search order number" value={search} onChange={(e) => { setSearch(e.target.value); setPage("orders"); setOrderFilter("all"); }} /></div><div className="date-filters"><label>From <input type="date" value={from} onChange={(e) => { setFrom(e.target.value); setOrderPage(1); }} /></label><label>To <input type="date" value={to} onChange={(e) => { setTo(e.target.value); setOrderPage(1); }} /></label></div></div>{filteredOrders.length ? <div className="order-grid orders-full-grid">{filteredOrders.map((order) => <OrderCard key={order.id} order={order} onAction={handleOrderAction} onDetails={setDetails} onFulfilmentChange={handleFulfilmentChange} fulfilmentSettings={{ pickup: business?.pickupEnabled ?? true, delivery: business?.deliveryEnabled ?? true }} fulfilmentBusy={fulfilmentBusy === order.id} busy={!!actionBusy[order.id]} />)}</div> : <Empty icon={<ShoppingBag size={25} />} title="No orders here yet" text="Orders matching this view will show up here." />}{!demo && <div className="pagination"><button className="btn btn-outline" disabled={orderPage <= 1} onClick={() => setOrderPage((n) => n - 1)}><ChevronLeft size={16} /> Previous</button><span>Page {orderPage}</span><button className="btn btn-outline" disabled={!hasMore} onClick={() => setOrderPage((n) => n + 1)}>Next <ChevronRight size={16} /></button></div>}</section></>}
+        {page === "reviews" && <>
+          <div className="page-intro"><div><div className="eyebrow">WHAT CUSTOMERS ARE SAYING <span>✳</span></div><h1>Reviews</h1><p>{demo ? "Sample feedback from your demo orders." : "Delivered-order feedback from Marketplace, with replies sent back to the customer."}</p></div>{!demo && <button className="btn btn-outline" disabled={reviewsBusy || linkInvalid} onClick={refreshReviews}>{reviewsBusy ? "Refreshing…" : "Refresh reviews"}</button>}</div>
+          {reviewsError && <div className="approval-banner"><Info size={18} /> {reviewsError} <button onClick={refreshReviews}>Retry</button></div>}
+          {!demo && <div className="approval-banner"><Info size={18} /> Reviews, themes and public ratings are owned by Marketplace. Your reply is written back to the same listing.</div>}
+          <div className="metrics-grid reviews-metrics"><Metric icon={<Star size={21} />} tone="amber" title="Average rating" value={reviewInboxForView.summary.averageRating !== null ? reviewInboxForView.summary.averageRating.toFixed(1) : "—"} detail={`Last ${reviewInboxForView.summary.windowDays} days`} /><Metric icon={<ShoppingBag size={21} />} tone="blue" title="Reviews" value={String(reviewInboxForView.summary.reviewCount)} detail="Delivered orders with feedback" /><Metric icon={<Info size={21} />} tone="red" title="Low ratings" value={String(reviewInboxForView.summary.badOrders)} detail="Two stars or fewer" /><Metric icon={<BellRing size={21} />} tone="green" title="Awaiting reply" value={String(reviewInboxForView.summary.pendingReplies)} detail="Reviews without a merchant reply" /></div>
+          <div className="reviews-columns"><section className="panel review-themes"><div className="widget-title"><h3>What people mention</h3><span>30 DAYS</span></div>{reviewInboxForView.themes.length ? <div className="review-theme-list">{reviewInboxForView.themes.map((theme) => <div className="review-theme" key={theme.key}><div><strong>{theme.label}</strong><span>{theme.count} mention{theme.count === 1 ? "" : "s"}</span></div><span className="review-theme-score">{theme.averageRating !== null ? `${theme.averageRating.toFixed(1)}★` : "—"}</span></div>)}</div> : <p className="feedback-unavailable">No written themes in the last 30 days yet.</p>}</section>
+            <section className="panel review-list-panel"><div className="widget-title"><h3>Latest reviews</h3><span>{reviewInboxForView.reviews.length} SHOWN</span></div>{reviewInboxForView.reviews.length ? <div className="review-list">{reviewInboxForView.reviews.map((review) => <div className="review-row" key={review.orderCode}>
+              <div className="review-row-head"><div><strong>Order {review.orderCode.length > 14 ? `${review.orderCode.slice(0, 14)}…` : review.orderCode}</strong><span suppressHydrationWarning>{review.feedbackAt ? new Date(review.feedbackAt).toLocaleDateString("en-IN") : "Date unavailable"}</span></div><span className={`review-stars ${review.rating !== null && review.rating <= 2 ? "negative" : ""}`}>{review.rating !== null ? `${"★".repeat(review.rating)}${"☆".repeat(5 - review.rating)}` : "—"}</span></div>
+              {review.review ? <p className="review-text">{review.review}</p> : <p className="review-text muted">No written comment.</p>}
+              {review.merchantResponse ? <div className="feedback-reply-sent"><strong>Your reply</strong><p>{review.merchantResponse}</p></div> : can(role, "feedback.write") ? <ReviewReply review={review} busy={reviewReplyBusy === review.orderCode} onSend={submitReviewReply} /> : <p className="feedback-unavailable">Awaiting a reply from your team.</p>}
+            </div>)}</div> : <Empty icon={<Star size={25} />} title="No reviews yet" text="Feedback from delivered orders will appear here." />}</section></div>
+        </>}
         {page === "menu" && <><div className="page-intro"><div><div className="eyebrow">MADE BY YOU <span>✳</span></div><h1>Your menu</h1><p>Good food starts here. Keep your menu up to date.</p></div>{can(role, "menu.write") && <button className="btn btn-primary" onClick={() => setMenuDialog({ item: null })}><Plus size={17} /> Add item</button>}</div><div className="menu-summary"><span><BookOpen size={18} /> <strong>{items.length}</strong> menu items</span><span className="summary-divider" /><span><span className="green-dot" /> {items.filter((i) => i.available).length} available</span><span><span className="grey-dot" /> {items.filter((i) => !i.available).length} sold out</span></div>{menuError && <div className="approval-banner"><Info size={18} /> {menuError} <button onClick={() => { api<{ items: MenuItem[] }>("/api/merchant/menu").then((data) => { setItems(data.items); setMenuError(""); }).catch((error) => setMenuError(error.message)); }}>Retry</button></div>}{items.length ? <div className="panel menu-list"><div className="menu-list-head"><span>ITEM</span><span>CATEGORY</span><span>PRICE</span><span>AVAILABILITY</span><span /></div>{items.map((item) => <div className="menu-row" key={item.id}><div className="menu-item-info">{item.imageUrl ? <Image src={item.imageUrl} alt="" width={50} height={50} unoptimized className="menu-thumb" /> : <div className="menu-thumb menu-placeholder"><UtensilsCrossed size={20} /></div>}<div><strong>{item.name}</strong><span>{item.description || "A favourite from your kitchen"}</span></div></div><div className="menu-category">{item.category}</div><strong className="menu-price">{money(item.price)}</strong><div className="menu-availability">{can(role, "menu.availability") && <button className={`switch small-switch ${item.available ? "on" : ""}`} role="switch" aria-checked={item.available} aria-label={`${item.name} availability`} disabled={busyItem === item.id} onClick={() => toggleItem(item)}><span /></button>}<span>{item.available ? "Available" : "Sold out"}</span></div>{can(role, "menu.write") && <div className="menu-row-actions"><button className="icon-button small" aria-label={`Edit ${item.name}`} onClick={() => setMenuDialog({ item })}><Settings2 size={17} /></button><button className="icon-button small" aria-label={`Archive ${item.name}`} disabled={busyItem === item.id} onClick={() => deleteItem(item)}><Trash2 size={16} /></button></div>}</div>)}</div> : <Empty icon={<BookOpen size={25} />} title="Your menu starts here" text="Add your first item and price so customers know what’s cooking." action={can(role, "menu.write") ? <button className="btn btn-primary" onClick={() => setMenuDialog({ item: null })}><Plus size={16} /> Add your first item</button> : undefined} />}</>}
         {page === "offers" && <>
           <div className="page-intro"><div><div className="eyebrow">MORE REASONS TO ORDER <span>✳</span></div><h1>Offers</h1><p>Create discount codes your customers can use at checkout. Savings are calculated on your menu prices, never guessed by the browser.</p></div>{can(role, "offers.write") && <button className="btn btn-primary" onClick={() => setOfferDialog({ offer: null })}><Plus size={17} /> Create offer</button>}</div>
@@ -547,6 +614,13 @@ function Empty({ icon, title, text, action }: { icon: React.ReactNode; title: st
 function FeedbackReply({ order, busy, onSend }: { order: Order; busy: boolean; onSend: (order: Order, response: string) => Promise<void> }) {
   const [response, setResponse] = useState("");
   return <form className="feedback-reply" onSubmit={(event) => { event.preventDefault(); if (response.trim() && !busy) { const sent = response.trim(); void onSend(order, sent).then(() => setResponse("")); } }}>
+    <label>Reply to this review<textarea maxLength={500} rows={3} required value={response} onChange={(event) => setResponse(event.target.value)} placeholder="Thank them, or explain what happened…" /></label>
+    <button className="btn btn-primary" disabled={busy || !response.trim()}>{busy ? "Sending…" : "Send reply"}</button>
+  </form>;
+}
+function ReviewReply({ review, busy, onSend }: { review: Review; busy: boolean; onSend: (review: Review, response: string) => Promise<void> }) {
+  const [response, setResponse] = useState("");
+  return <form className="feedback-reply" onSubmit={(event) => { event.preventDefault(); if (response.trim() && !busy) { const sent = response.trim(); void onSend(review, sent).then(() => setResponse("")); } }}>
     <label>Reply to this review<textarea maxLength={500} rows={3} required value={response} onChange={(event) => setResponse(event.target.value)} placeholder="Thank them, or explain what happened…" /></label>
     <button className="btn btn-primary" disabled={busy || !response.trim()}>{busy ? "Sending…" : "Send reply"}</button>
   </form>;
