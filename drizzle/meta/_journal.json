@@ -113,6 +113,13 @@
       "when": 1795315200001,
       "tag": "0015_multi_outlet",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1795092425604,
+      "tag": "0016_compliance_money_docs",
+      "breakpoints": true
     }
   ]
 }
