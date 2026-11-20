@@ -105,7 +105,7 @@ export default function MerchantApp() {
   const [search, setSearch] = useState(""), [debouncedSearch, setDebouncedSearch] = useState(""), [from, setFrom] = useState(""), [to, setTo] = useState(""), [orderPage, setOrderPage] = useState(1), [hasMore, setHasMore] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false), [profileOpen, setProfileOpen] = useState(false), [passwordOpen, setPasswordOpen] = useState(false), [setupOpen, setSetupOpen] = useState(false), [menuDialog, setMenuDialog] = useState<{ item: MenuItem | null } | null>(null), [modifierGroupDialog, setModifierGroupDialog] = useState<{ group: MenuModifierGroup | null } | null>(null), [decision, setDecision] = useState<{ order: Order; action: OrderAction } | null>(null), [fulfilmentDialog, setFulfilmentDialog] = useState<{ order: Order; fulfilment: "pickup" | "delivery" } | null>(null), [fulfilmentBusy, setFulfilmentBusy] = useState(""), [details, setDetails] = useState<Order | null>(null), [notificationsOpen, setNotificationsOpen] = useState(false), [helpOpen, setHelpOpen] = useState(false), [offerDialog, setOfferDialog] = useState<{ offer: Offer | null } | null>(null), [offerFilter, setOfferFilter] = useState<"active" | "archived">("active"), [offerBusy, setOfferBusy] = useState(""), [offersError, setOffersError] = useState(""), [staff, setStaff] = useState<StaffMember[]>([]), [staffEmail, setStaffEmail] = useState(""), [staffRole, setStaffRole] = useState<StaffRole>("server"), [staffBusy, setStaffBusy] = useState(""), [staffError, setStaffError] = useState("");
   const online = useSyncExternalStore(subscribeToNetwork, getNetworkStatus, () => true);
-  const [syncError, setSyncError] = useState(""), [toast, setToast] = useState(""), [busyStore, setBusyStore] = useState(false), [busyItem, setBusyItem] = useState(""), [busyGroup, setBusyGroup] = useState(""), [dataEpoch, setDataEpoch] = useState(0), [soundEnabled, setSoundEnabled] = useState(() => typeof window !== "undefined" && localStorage.getItem("savour-sound") === "on"), [notificationPermission, setNotificationPermission] = useState(() => typeof Notification !== "undefined" ? Notification.permission : "default"), [menuError, setMenuError] = useState(""), [resendingVerification, setResendingVerification] = useState(false), [settlementBusy, setSettlementBusy] = useState(false), [feedbackBusy, setFeedbackBusy] = useState(""), [linkInvalid, setLinkInvalid] = useState(false);
+  const [syncError, setSyncError] = useState(""), [toast, setToast] = useState(""), [busyStore, setBusyStore] = useState(false), [busyItem, setBusyItem] = useState(""), [busyGroup, setBusyGroup] = useState(""), [dataEpoch, setDataEpoch] = useState(0), [catalogEpoch, setCatalogEpoch] = useState(0), [soundEnabled, setSoundEnabled] = useState(() => typeof window !== "undefined" && localStorage.getItem("savour-sound") === "on"), [notificationPermission, setNotificationPermission] = useState(() => typeof Notification !== "undefined" ? Notification.permission : "default"), [menuError, setMenuError] = useState(""), [resendingVerification, setResendingVerification] = useState(false), [settlementBusy, setSettlementBusy] = useState(false), [feedbackBusy, setFeedbackBusy] = useState(""), [linkInvalid, setLinkInvalid] = useState(false);
   const [earningsTab, setEarningsTab] = useState<"overview" | "revenue" | "items" | "insights">("overview"), [revenuePreset, setRevenuePreset] = useState<RevenuePreset>("1m"), [revenueRange, setRevenueRange] = useState<RevenueRange>(() => rangeForPreset("1m"));
   const [revenue, setRevenue] = useState<RevenueSummary | null>(null), [revenueBusy, setRevenueBusy] = useState(false), [revenueError, setRevenueError] = useState("");
   const [itemReport, setItemReport] = useState<ItemAnalytics | null>(null), [itemReportBusy, setItemReportBusy] = useState(false), [itemReportError, setItemReportError] = useState("");
@@ -192,13 +192,13 @@ export default function MerchantApp() {
     let active = true;
     api<{ items: MenuItem[]; modifierGroups: MenuModifierGroup[] }>("/api/merchant/menu").then((data) => { if (active) { setItems(data.items); setModifierGroups(data.modifierGroups); setMenuError(""); } }).catch((error) => { if (active && !(error instanceof Api401Error && error.sessionExpired)) setMenuError(error.message); });
     return () => { active = false; };
-  }, [demo, business?.id, dataEpoch, linkInvalid]);
+  }, [demo, business?.id, dataEpoch, catalogEpoch, linkInvalid]);
   useEffect(() => {
     if (demo || !business?.id) return;
     let active = true;
     api<{ offers: Offer[] }>("/api/merchant/offers").then((data) => { if (active) { setOffers(data.offers); setOffersError(""); } }).catch((error) => { if (active && !(error instanceof Api401Error && error.sessionExpired)) setOffersError(error.message); });
     return () => { active = false; };
-  }, [demo, business?.id, dataEpoch]);
+  }, [demo, business?.id, dataEpoch, catalogEpoch]);
   useEffect(() => {
     const refreshAfterLinkChange = () => { setDataEpoch((n) => n + 1); void checkLink(); };
     window.addEventListener("savour-marketplace-link-changed", refreshAfterLinkChange);
@@ -786,6 +786,10 @@ export default function MerchantApp() {
     applyQuery(buildOrderQuery(next, nextFilter, nextPage, debouncedSearch, from, to));
     setPage(next);
     if (next === "orders") { setOrderPage(1); setOrderFilter(nextFilter); }
+    // Menu and offers are paired-aware reads that can be stale after an outage or
+    // a link change. Revalidate in the background on tab entry while keeping the
+    // last rendered data on screen, so the page never flashes empty.
+    if (next === "menu" || next === "offers") setCatalogEpoch((n) => n + 1);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
   function toggleOutletMenu() {
