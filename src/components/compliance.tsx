@@ -24,6 +24,10 @@ const DOCUMENT_KINDS: { value: ComplianceDocumentKind; label: string; expiry: bo
 ];
 const TAX_REGIMES: TaxRegime[] = ["unregistered", "regular", "composition"];
 const pretty = (value: string) => value.replaceAll("_", " ").replace(/^./, (character) => character.toUpperCase());
+/** Matches the advisory rules in compliance-data: these states have nothing left to do. */
+const DONE_STATUSES = new Set(["submitted", "not_applicable"]);
+const DONE_PAYOUT_STATUSES = new Set(["configured", "verified"]);
+const statusTag = (label: string, done: boolean) => <span className={`approval-tag${done ? " done" : ""}`}>{done && <CheckCircle2 size={12} aria-hidden="true" />}{label}</span>;
 
 /** All data is scoped by the server to the active session outlet; no business id is sent from the browser. */
 export function Compliance({ business, role, demo, onToast, onChanged }: {
@@ -214,11 +218,11 @@ export function Compliance({ business, role, demo, onToast, onChanged }: {
     {tab === "overview" && <>
       {summary?.advisories.length ? <div className="approval-banner compliance-advisories"><AlertTriangle size={18} /><div><strong>{summary.advisories.length} advisory item{summary.advisories.length === 1 ? "" : "s"}</strong>{summary.advisories.map((item) => <span key={item.key}>{item.label} — {item.detail}</span>)}</div></div> : <div className="info-box"><CheckCircle2 size={14} /> No compliance advisories for this outlet.</div>}
       {summary && <div className="compliance-status-grid">
-        <div className="compliance-status-card"><strong>KYC documents</strong><span className="approval-tag">{pretty(summary.kycStatus)}</span><span>Identity and address proof</span></div>
-        <div className="compliance-status-card"><strong>FSSAI licence</strong><span className="approval-tag">{pretty(summary.fssaiStatus)}</span><span>{summary.fssaiNumber || "Number not added"}{summary.fssaiExpiresAt ? ` · expires ${summary.fssaiExpiresAt.slice(0, 10)}` : ""}</span></div>
-        <div className="compliance-status-card"><strong>Tax registration</strong><span className="approval-tag">{pretty(summary.taxStatus)}</span><span>{summary.gstin || (summary.taxRegime === "unregistered" ? "Unregistered" : "GSTIN not added")}</span></div>
-        <div className="compliance-status-card"><strong>Agreement</strong><span className="approval-tag">{summary.agreement.accepted ? "Accepted" : "Not accepted"}</span><span>Version {summary.agreement.version}</span></div>
-        <div className="compliance-status-card"><strong>Payout</strong><span className="approval-tag">{pretty(summary.payoutStatus)}</span><span>{summary.payoutMethodLabel || (summary.paired ? "Managed in Marketplace" : "Connect Marketplace to set up payouts")}</span></div>
+        <div className="compliance-status-card"><strong>KYC documents</strong>{statusTag(pretty(summary.kycStatus), DONE_STATUSES.has(summary.kycStatus))}<span>Identity and address proof</span></div>
+        <div className="compliance-status-card"><strong>FSSAI licence</strong>{statusTag(pretty(summary.fssaiStatus), DONE_STATUSES.has(summary.fssaiStatus))}<span>{summary.fssaiNumber || "Number not added"}{summary.fssaiExpiresAt ? ` · expires ${summary.fssaiExpiresAt.slice(0, 10)}` : ""}</span></div>
+        <div className="compliance-status-card"><strong>Tax registration</strong>{statusTag(pretty(summary.taxStatus), DONE_STATUSES.has(summary.taxStatus))}<span>{summary.gstin || (summary.taxRegime === "unregistered" ? "Unregistered" : "GSTIN not added")}</span></div>
+        <div className="compliance-status-card"><strong>Agreement</strong>{statusTag(summary.agreement.accepted ? "Accepted" : "Not accepted", summary.agreement.accepted)}<span>Version {summary.agreement.version}</span></div>
+        <div className="compliance-status-card"><strong>Payout</strong>{statusTag(pretty(summary.payoutStatus), DONE_PAYOUT_STATUSES.has(summary.payoutStatus))}<span>{summary.payoutMethodLabel || (summary.paired ? "Managed in Marketplace" : "Connect Marketplace to set up payouts")}</span></div>
       </div>}
       <section className="panel settings-panel"><div className="section-heading"><div><h3>Registration details</h3><p>Free-text legal details used on pro forma documents. Format checks apply to GSTIN, PAN and FSSAI.</p></div><span className="settings-icon"><FileText size={19} /></span></div>
         <form className="form-stack" onSubmit={(event) => void saveDetails(event)}>

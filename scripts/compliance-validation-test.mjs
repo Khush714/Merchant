@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   MAX_DOCUMENT_BYTES,
   agreementContentHash,
@@ -84,4 +85,14 @@ assert.equal(invoices[0].orderId, "order-1");
 assert.equal(invoices[0].totalAmount, 10500);
 assert.throws(() => parseRemoteInvoiceFeed({ invoices: [{ invoiceNumber: "bad", status: "paid" }] }), /invalid invoice status/);
 
-console.log("PASS: compliance validation and Marketplace parsers");
+// KPI cards highlight completed work with green text and a tick; incomplete work keeps the warning tag.
+const cardSource = readFileSync(new URL("../src/components/compliance.tsx", import.meta.url), "utf8");
+assert.match(cardSource, /DONE_STATUSES = new Set\(\["submitted", "not_applicable"\]\)/);
+assert.match(cardSource, /DONE_PAYOUT_STATUSES = new Set\(\["configured", "verified"\]\)/);
+assert.match(cardSource, /className=\{`approval-tag\$\{done \? " done" : ""\}`\}/);
+assert.match(cardSource, /done && <CheckCircle2 size=\{12\} aria-hidden="true" \/>/);
+assert.match(cardSource, /statusTag\(summary\.agreement\.accepted \? "Accepted" : "Not accepted", summary\.agreement\.accepted\)/);
+const cardCss = readFileSync(new URL("../src/app/globals.css", import.meta.url), "utf8");
+assert.match(cardCss, /\.approval-tag\.done\{[^}]*color:#1f7a4d/);
+
+console.log("PASS: compliance validation, Marketplace parsers and KPI status tags");
