@@ -7,6 +7,7 @@ import { AccountModal, Api401Error, AUTH_EXPIRED_EVENT, api, DecisionModal, Fulf
 import { BusinessSettings } from "@/components/business-settings";
 import { ServiceSettings } from "@/components/service-settings";
 import { buildAdvancedAnalytics } from "@/lib/analytics-core";
+import { clearApiCache, seedCached, setCacheScope } from "@/lib/client-cache";
 import { Compliance } from "@/components/compliance";
 import { OrderCard, statusLabel, timeAgo, type OrderAction } from "@/components/order-card";
 import { demoBusiness, demoMenu, demoModifierGroups, demoOverview, makeDemoOffers, makeDemoOrders } from "@/lib/demo";
@@ -127,6 +128,49 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
   const orderCacheRef = useRef<Map<string, CachedOrders>>(new Map());
   const loadOrdersRef = useRef<((force?: boolean) => void) | null>(null);
   const [actionBusy, setActionBusy] = useState<Record<string, boolean>>({});
+  const soundEnabledRef = useRef(soundEnabled);
+
+  // One shared browser cache for every tab: scope it to the signed-in outlet,
+  // then seed it with the server-rendered first screen so even the first click
+  // is a local read. All remaining tabs are warmed in parallel after paint.
+  useEffect(() => {
+    setCacheScope(demo || !user?.id ? "anonymous" : `${user.id}:${business?.id ?? "none"}`);
+  }, [demo, user?.id, business?.id]);
+  useEffect(() => {
+    if (!bootData || demo) return;
+    seedCached("/api/merchant/overview", { business: initialAuth.business, overview: bootData.overview });
+    seedCached(`/api/merchant/orders?${orderParams(buildOrderQuery("home", "active", 1, "", "", ""))}`, { orders: bootData.orders, hasMore: bootData.hasMore });
+  }, [bootData, demo, initialAuth.business]);
+  useEffect(() => {
+    if (demo || !business?.id) return;
+    const handle = window.setTimeout(() => {
+      const range = new URLSearchParams();
+      if (revenueRange.from && revenueRange.to) { range.set("from", revenueRange.from); range.set("to", revenueRange.to); }
+      const jobs: Array<() => Promise<unknown>> = [
+        () => api("/api/merchant/menu"),
+        () => api("/api/merchant/offers"),
+        () => api("/api/merchant/marketplace-link"),
+      ];
+      if (can(role, "staff.write")) jobs.push(() => api("/api/merchant/staff"));
+      if (can(role, "feedback.write")) jobs.push(() => api("/api/merchant/feedback"));
+      if (can(role, "compliance.read")) jobs.push(
+        () => api("/api/merchant/compliance"),
+        () => api("/api/merchant/compliance/payout"),
+        () => api("/api/merchant/compliance/invoices?"),
+      );
+      if (can(role, "settlements.read")) jobs.push(
+        () => api(`/api/merchant/revenue?${range}`),
+        () => api(`/api/merchant/item-analytics?${range}`),
+        () => api(`/api/merchant/analytics?${range}`),
+      );
+      for (const status of ["all", "new", "accepted", "preparing", "ready", "out_for_delivery", "completed", "feedback", "cancelled"]) {
+        jobs.push(() => api(`/api/merchant/orders?${orderParams({ status, page: 1, search: "", from: "", to: "" })}`));
+      }
+      jobs.forEach((job) => { void job().catch(() => {}); });
+    }, 120);
+    return () => window.clearTimeout(handle);
+  }, [demo, business?.id, role, revenueRange.from, revenueRange.to]);
+  useEffect(() => { soundEnabledRef.current = soundEnabled; }, [soundEnabled]);
 
   const activate = useCallback((data: AuthData, openSetup = true) => {
     if (!data.user) return;
@@ -212,7 +256,7 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
   }, [checkLink]);
   useEffect(() => {
     if (demo || !business?.id || linkInvalid) return;
-    let stopped = false, failures = 0, checking = false, forceNext = true, pendingForce = false, prefetched = false;
+    let stopped = false, failures = 0, checking = false, forceNext = true, pendingForce = false, initialOverviewRefresh = true;
     let timer: ReturnType<typeof setTimeout>;
     let inFlight: AbortController | null = null;
     let inFlightKey = "";
@@ -227,22 +271,6 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
       }
     };
 
-    const prefetchFilters = async () => {
-      // Fetch the other tabs together instead of one-by-one; they only warm the
-      // cache and must not hold up the first render or a tab switch.
-      const warm = async (status: string) => {
-        if (stopped) return;
-        const query: OrderQuery = { status, page: 1, search: "", from: "", to: "" };
-        const key = orderQueryKey(query);
-        if (orderCacheRef.current.has(key)) return;
-        try {
-          const data = await api<{ orders: Order[]; hasMore: boolean }>(`/api/merchant/orders?${orderParams(query)}`);
-          if (!stopped) orderCacheRef.current.set(key, data);
-        } catch { /* Best effort: opening the tab revalidates it directly. */ }
-      };
-      await Promise.all(["all", "new", "accepted", "preparing", "ready", "out_for_delivery", "completed", "feedback", "cancelled"].map(warm));
-    };
-
     const loadNow = (force = false) => {
       if (stopped || !navigator.onLine || document.hidden) { pendingForce = true; return; }
       const query = orderQueryRef.current;
@@ -252,15 +280,20 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
       const controller = new AbortController();
       inFlight = controller;
       inFlightKey = key;
+      // The first poll runs the bounded settlement sync in the background while
+      // the server-rendered snapshot stays on screen. Explicit refreshes always
+      // hit the network; change-driven reads use stale-while-revalidate.
+      const overviewRefresh = initialOverviewRefresh || force;
+      initialOverviewRefresh = false;
       Promise.all([
-        api<{ business: Business; overview: Overview }>("/api/merchant/overview", { signal: controller.signal }),
-        api<{ orders: Order[]; hasMore: boolean }>(`/api/merchant/orders?${orderParams(query)}`, { signal: controller.signal }),
+        api<{ business: Business; overview: Overview }>("/api/merchant/overview", { signal: controller.signal, refresh: overviewRefresh }),
+        api<{ orders: Order[]; hasMore: boolean }>(`/api/merchant/orders?${orderParams(query)}`, { signal: controller.signal, refresh: force }),
       ]).then(([overviewData, orderData]) => {
         if (stopped) return;
         const newCount = overviewData.overview.counts.new;
         if (lastNewCount.current !== null && (newCount > lastNewCount.current || (newCount === lastNewCount.current && newCount > 0 && lastNewId.current && overviewData.overview.latestNewOrderId && lastNewId.current !== overviewData.overview.latestNewOrderId))) {
           setToast("A new order needs your attention.");
-          if (soundEnabled) playAlert();
+          if (soundEnabledRef.current) playAlert();
           if ("Notification" in window && Notification.permission === "granted") { try { new Notification("New order on Savour", { body: "Open your workspace to review it." }); } catch { /* Notifications may be unavailable in this browser. */ } }
         }
         const nextFeedback = overviewData.overview.feedback;
@@ -275,7 +308,6 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
         setOverview(overviewData.overview);
         writeOrders(key, { orders: orderData.orders, hasMore: orderData.hasMore });
         setSyncError(""); failures = 0;
-        if (!prefetched) { prefetched = true; void prefetchFilters(); }
       }).catch((error) => {
         if (stopped || controller.signal.aborted) return;
         if (error instanceof Api401Error) {
@@ -342,7 +374,7 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
       window.removeEventListener("focus", refreshNow);
       window.removeEventListener("savour-marketplace-link-changed", refreshNow);
     };
-  }, [demo, business?.id, soundEnabled, online, linkInvalid]);
+  }, [demo, business?.id, online, linkInvalid]);
 
   const vendor = business?.type === "vendor";
   const stats = demo ? demoOverview(orders) : overview;
@@ -654,7 +686,7 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
     }
     const data = await api<{ business: Business }>("/api/merchant/business", { method: "PATCH", body: JSON.stringify(payload) }); setBusiness(data.business);
   }
-  async function endSession(action: "logout" | "logout-all", message: string) { try { await api("/api/auth", { method: "POST", body: JSON.stringify({ action }) }); setDemo(true); setUser(null); setVerificationRequired(false); setBusiness(demoBusiness); setBusinesses([]); setOutletMenuOpen(false); setAddOutletOpen(false); setOrders(makeDemoOrders()); setItems(demoMenu); setPage("home"); setToast(message); } catch (err) { setToast(err instanceof Error ? err.message : "Could not sign out."); } }
+  async function endSession(action: "logout" | "logout-all", message: string) { try { await api("/api/auth", { method: "POST", body: JSON.stringify({ action }) }); clearApiCache(); setCacheScope("anonymous"); setDemo(true); setUser(null); setVerificationRequired(false); setBusiness(demoBusiness); setBusinesses([]); setOutletMenuOpen(false); setAddOutletOpen(false); setOrders(makeDemoOrders()); setItems(demoMenu); setPage("home"); setToast(message); } catch (err) { setToast(err instanceof Error ? err.message : "Could not sign out."); } }
   function signOut() { return endSession("logout", "Signed out."); }
   function signOutEverywhere() { return endSession("logout-all", "Signed out of all devices."); }
   async function resendVerification() {

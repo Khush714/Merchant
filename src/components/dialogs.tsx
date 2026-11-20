@@ -1,6 +1,7 @@
 "use client";
 import { useState, type FormEvent, type ReactNode } from "react";
 import { ArrowLeft, ArrowRight, CheckCircle2, ChefHat, Plus, Store, X } from "lucide-react";
+import { cachedGet, clearApiCache, markApiCacheStale, refreshCached } from "@/lib/client-cache";
 import type { AuthResponse, AuthUser, Business, BusinessType, MenuItem, MenuModifierGroup, Offer, OfferInput, Order } from "@/lib/types";
 import { money } from "@/lib/types";
 import type { OrderAction } from "@/components/order-card";
@@ -11,16 +12,62 @@ export class Api401Error extends Error {
   constructor(message: string, public readonly sessionExpired: boolean, public readonly code?: string) { super(message); }
 }
 
-export async function api<T>(path: string, options?: RequestInit): Promise<T> {
+export type ApiOptions = RequestInit & {
+  /** Override the stale-while-revalidate window for this read. */
+  cacheTtl?: number;
+  /** Skip the cache entirely and do not store the response. */
+  fresh?: boolean;
+  /** Hit the network now and replace the cached value with the response. */
+  refresh?: boolean;
+  /** Do not persist this response in session storage. */
+  noPersist?: boolean;
+};
+
+/** Keep signed, one-off, and auth responses out of the shared cache. */
+function isCacheable(path: string) {
+  if (!path.startsWith("/api/")) return false;
+  if (path.startsWith("/api/auth") || path.startsWith("/api/health")) return false;
+  return !/(download|signed|export|csv|logout|\/changes|\/activate)/i.test(path);
+}
+
+function ttlFor(path: string) {
+  if (path.startsWith("/api/merchant/overview") || path.startsWith("/api/merchant/orders")) return 15_000;
+  if (path.startsWith("/api/compliance")) return 60_000;
+  return 30_000;
+}
+
+async function fetchLive<T>(path: string, options?: ApiOptions): Promise<T> {
   const response = await fetch(path, { ...options, headers: { "Content-Type": "application/json", ...options?.headers }, cache: "no-store" });
   const data = await response.json().catch(() => ({}));
   if (response.status === 401 && !path.startsWith("/api/auth")) {
     const sessionExpired = response.headers.get("x-savour-auth-required") === "1";
-    if (sessionExpired && typeof window !== "undefined") window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+    if (sessionExpired && typeof window !== "undefined") {
+      clearApiCache();
+      window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+    }
     throw new Api401Error(data.error || "Please sign in to continue.", sessionExpired, typeof data.code === "string" ? data.code : undefined);
   }
   if (!response.ok) throw new Error(data.error || "Something went wrong. Please try again.");
   return data as T;
+}
+
+/**
+ * GETs resolve from the shared client cache first, so remounted and prefetched
+ * tabs never wait on a round trip. Stale entries refresh in the background.
+ */
+export async function api<T>(path: string, options?: ApiOptions): Promise<T> {
+  const method = (options?.method ?? "GET").toUpperCase();
+  if (method === "GET" && isCacheable(path)) {
+    // Compliance payloads can contain short-lived signed document links; keep
+    // those in memory only so a reload never reuses an expired URL.
+    const persist = !options?.noPersist && !path.startsWith("/api/merchant/compliance");
+    const ttl = options?.cacheTtl ?? ttlFor(path);
+    if (options?.refresh) return refreshCached<T>(path, () => fetchLive<T>(path, options), ttl, persist);
+    if (!options?.fresh) return cachedGet<T>(path, () => fetchLive<T>(path, options), ttl, persist);
+  }
+  const result = await fetchLive<T>(path, options);
+  if (!path.startsWith("/api/auth") && method !== "GET") markApiCacheStale();
+  return result;
 }
 export function Modal({ title, subtitle, onClose, children, wide = false }: { title: string; subtitle?: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section role="dialog" aria-modal="true" aria-label={title} className={`modal ${wide ? "modal-wide" : ""}`}>

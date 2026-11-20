@@ -52,8 +52,8 @@ export function Compliance({ business, role, demo, onToast, onChanged }: {
   const [invoiceSource, setInvoiceSource] = useState<"" | "marketplace" | "proforma">(""), [invoiceBusy, setInvoiceBusy] = useState(false);
   const [syncFrom, setSyncFrom] = useState(""), [syncTo, setSyncTo] = useState(""), [completedOrders, setCompletedOrders] = useState<CompletedOrder[]>([]);
 
-  const loadOverview = useCallback(async () => {
-    try { setOverview(await api<ComplianceOverview>("/api/merchant/compliance")); setError(""); }
+  const loadOverview = useCallback(async (fresh = false) => {
+    try { setOverview(await api<ComplianceOverview>("/api/merchant/compliance", { fresh })); setError(""); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Could not load compliance details."); }
   }, []);
   // The component is mounted only on this page and keyed by outlet in the parent.
@@ -76,12 +76,12 @@ export function Compliance({ business, role, demo, onToast, onChanged }: {
     catch (cause) { setPayout({ available: false, authoritative: false, status: "unavailable", methodLabel: "", reference: "", syncedAt: null, message: cause instanceof Error ? cause.message : "Could not load payout status." }); }
     finally { setPayoutBusy(false); }
   }, []);
-  const loadInvoices = useCallback(async () => {
+  const loadInvoices = useCallback(async (fresh = false) => {
     setInvoiceBusy(true);
     try {
       const params = new URLSearchParams();
       if (invoiceSource) params.set("source", invoiceSource);
-      const data = await api<{ invoices: TaxInvoiceDto[]; hasMore: boolean; paired: boolean }>(`/api/merchant/compliance/invoices?${params}`);
+      const data = await api<{ invoices: TaxInvoiceDto[]; hasMore: boolean; paired: boolean }>(`/api/merchant/compliance/invoices?${params}`, { fresh });
       setInvoices(data.invoices); setInvoiceMeta({ hasMore: data.hasMore, paired: data.paired }); setError("");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not load invoices."); }
     finally { setInvoiceBusy(false); }
@@ -134,7 +134,7 @@ export function Compliance({ business, role, demo, onToast, onChanged }: {
         }
         throw new Error(typeof payload.error === "string" ? payload.error : "Could not upload the document.");
       }
-      form.reset(); await loadOverview();
+      form.reset(); await loadOverview(true);
       setMessage("Document encrypted and uploaded. Only the masked metadata is stored locally.");
       onToast("Document uploaded."); onChanged();
     } catch (cause) { setMessage(cause instanceof Error ? cause.message : "Could not upload the document."); }
@@ -146,7 +146,7 @@ export function Compliance({ business, role, demo, onToast, onChanged }: {
     setBusy(`document-${id}`); setMessage("");
     try {
       await api(`/api/merchant/compliance/documents/${encodeURIComponent(id)}`, { method: "DELETE" });
-      await loadOverview(); setMessage("Document removed."); onToast("Document removed."); onChanged();
+      await loadOverview(true); setMessage("Document removed."); onToast("Document removed."); onChanged();
     } catch (cause) { setMessage(cause instanceof Error ? cause.message : "Could not remove the document."); }
     finally { setBusy(""); }
   }
@@ -165,7 +165,7 @@ export function Compliance({ business, role, demo, onToast, onChanged }: {
       onToast("Agreement accepted."); onChanged();
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : "Could not accept the agreement. Refresh and review the current version.");
-      await loadOverview();
+      await loadOverview(true);
     } finally { setBusy(""); }
   }
 
@@ -187,7 +187,7 @@ export function Compliance({ business, role, demo, onToast, onChanged }: {
       const result = await api<{ sync: { available: boolean; received: number; applied: number; skipped: number; message?: string } }>("/api/merchant/compliance/invoices", {
         method: "POST", body: JSON.stringify({ action: "sync", from: syncFrom || undefined, to: syncTo || undefined }),
       });
-      await loadInvoices();
+      await loadInvoices(true);
       setMessage(result.sync.available ? `Mirrored ${result.sync.applied} invoice(s) from Marketplace.` : result.sync.message ?? "Marketplace does not expose invoices on this deployment.");
       onToast("Invoice sync finished."); onChanged();
     } catch (cause) { setMessage(cause instanceof Error ? cause.message : "Could not sync invoices."); }
@@ -198,7 +198,7 @@ export function Compliance({ business, role, demo, onToast, onChanged }: {
     setInvoiceBusy(true); setMessage("");
     try {
       const result = await api<{ invoice: TaxInvoiceDto }>("/api/merchant/compliance/invoices", { method: "POST", body: JSON.stringify({ action: "proforma", orderId }) });
-      await loadInvoices(); setMessage(`Created pro forma ${result.invoice.invoiceNumber}. It is not a tax invoice.`);
+      await loadInvoices(true); setMessage(`Created pro forma ${result.invoice.invoiceNumber}. It is not a tax invoice.`);
       onToast("Pro forma document created."); onChanged();
     } catch (cause) { setMessage(cause instanceof Error ? cause.message : "Could not create the pro forma document."); }
     finally { setInvoiceBusy(false); }
