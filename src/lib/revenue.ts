@@ -84,6 +84,20 @@ export function normalizeRevenueRange(fromInput: unknown, toInput: unknown): Nor
   return { from, to, fromDate, toExclusiveDate: new Date(toDate.getTime() + 86_400_000) };
 }
 
+/** The equal-length period immediately before a bounded range, for week/month comparisons. */
+export function previousRevenueRange(range: NormalizedRevenueRange): NormalizedRevenueRange | null {
+  if (!range.from || !range.to || !range.fromDate || !range.toExclusiveDate) return null;
+  const [fromYear, fromMonth, fromDate] = parts(range.from);
+  const [toYear, toMonth, toDate] = parts(range.to);
+  const fromDay = Date.UTC(fromYear, fromMonth - 1, fromDate) / 86_400_000;
+  const toDay = Date.UTC(toYear, toMonth - 1, toDate) / 86_400_000;
+  const days = Math.max(1, toDay - fromDay + 1);
+  const previousTo = fromDay - 1;
+  const previousFrom = previousTo - days + 1;
+  const label = (day: number) => format(new Date(day * 86_400_000));
+  return normalizeRevenueRange(label(previousFrom), label(previousTo));
+}
+
 export function revenueRangeKey(range: RevenueRange): string {
   return range.from && range.to ? `${range.from}|${range.to}` : "all";
 }

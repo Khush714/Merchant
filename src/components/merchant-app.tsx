@@ -4,6 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { ArrowDownRight, ArrowRight, ArrowUpRight, BadgePercent, Bell, BellRing, Bike, BookOpen, CalendarDays, Check, CheckCircle2, ChefHat, ChevronDown, ChevronLeft, ChevronRight, CircleDollarSign, Clock3, CreditCard, Download, ExternalLink, Headphones, HelpCircle, Home, Info, KeyRound, LayoutGrid, Link2, LogOut, Mail, MapPin, Menu as MenuIcon, MoreHorizontal, PackageCheck, Plus, Search, Settings2, ShieldCheck, ShoppingBag, Sparkles, Star, Store, Trash2, Users, UtensilsCrossed, WifiOff, X } from "lucide-react";
 import { AccountModal, Api401Error, AUTH_EXPIRED_EVENT, api, DecisionModal, FulfilmentModal, MenuModal, ModifierGroupModal, Modal, OfferModal, PasswordModal, SetupModal, type MenuInput, type ModifierGroupInput } from "@/components/dialogs";
+import { BiDashboard } from "@/components/bi-dashboard";
 import { BusinessSettings } from "@/components/business-settings";
 import { ServiceSettings } from "@/components/service-settings";
 import { buildAdvancedAnalytics } from "@/lib/analytics-core";
@@ -938,6 +939,7 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
               <Metric icon={<CircleDollarSign size={21} />} tone="red" title="Gross sales" value={money(analyticsForView.summary.grossSales)} detail="Completed order value, before fees" />
               <Metric icon={<CalendarDays size={21} />} tone="blue" title="Average order value" value={analyticsForView.summary.completedOrders ? money(Math.round(analyticsForView.summary.grossSales / analyticsForView.summary.completedOrders)) : "—"} detail="Gross sales ÷ completed orders" />
             </div>
+            <BiDashboard report={analyticsForView} />
             {analyticsForView.kpis ? <>
               <div className="earnings-grid revenue-stats">
                 <Metric icon={<ShoppingBag size={21} />} tone="blue" title="Orders placed" value={String(analyticsForView.kpis.ordersPlaced)} detail="Orders created in this range" />
