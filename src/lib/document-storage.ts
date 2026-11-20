@@ -2,7 +2,7 @@ import "server-only";
 
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import { ApiError } from "@/lib/server";
-import { isLoopbackUrl } from "@/lib/urls";
+import { isLoopbackUrl, resolveStorageSignedUrl } from "@/lib/urls";
 
 const VERSION = "v1";
 const BUCKET = /^[A-Za-z0-9_.-]{1,100}$/;
@@ -108,7 +108,7 @@ export async function downloadDocumentObject(storageKey: string): Promise<Buffer
   const signedPath = payload?.signedURL ?? payload?.signedUrl;
   if (!signedPath) throw new ApiError("Private document storage returned an invalid link.", 502);
   let signedUrl: URL;
-  try { signedUrl = new URL(signedPath, `${base}/`); } catch { throw new ApiError("Private document storage returned an invalid link.", 502); }
+  try { signedUrl = resolveStorageSignedUrl(signedPath, base); } catch { throw new ApiError("Private document storage returned an invalid link.", 502); }
   let response: Response;
   try {
     response = await fetch(signedUrl, { cache: "no-store", signal: AbortSignal.timeout(10_000) });
