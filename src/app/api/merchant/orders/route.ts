@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, isNotNull, lt, sql, type SQL } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { orderEvents, orderItems, orders } from "@/db/schema";
@@ -8,47 +8,19 @@ import {
   marketplaceFetch,
   parseMarketplaceResponse,
   parseRemoteOrderMutation,
-  parseRemoteOrders,
 } from "@/lib/marketplace-bridge";
 import { ApiError, BODY_LIMITS, fail, readJson, requireBusiness, sameOrigin, textValue } from "@/lib/server";
 import type { OrderStatus } from "@/lib/types";
+import { loadOrdersData } from "@/lib/workspace-bootstrap";
 
 export const dynamic = "force-dynamic";
-const statuses = ["new", "accepted", "preparing", "ready", "out_for_delivery", "completed", "rejected", "cancelled"];
 const transitions: Record<string, string[]> = { new: ["accepted", "rejected"], accepted: ["preparing"], preparing: ["ready"], ready: ["out_for_delivery", "completed"], out_for_delivery: ["completed"] };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const toMarketplaceStatus: Record<string, string> = { new: "PLACED", accepted: "ACCEPTED", preparing: "PREPARING", ready: "READY", out_for_delivery: "OUT_FOR_DELIVERY", completed: "COMPLETED", rejected: "REJECTED", cancelled: "CANCELLED" };
 export async function GET(request: NextRequest) {
   try {
     const { business } = await requireBusiness("orders.read");
-    const p = request.nextUrl.searchParams, status = p.get("status") || "active", search = (p.get("search") || "").trim().slice(0, 20);
-    if (await getMarketplaceLink(business.id)) {
-      const remoteStatus = status === "feedback" ? "all" : status === "new" ? "PLACED" : status === "cancelled" ? "cancelled" : status === "active" || status === "all" ? status : (toMarketplaceStatus[status] ?? status);
-      const remoteParams = new URLSearchParams({ status: remoteStatus, page: String(Math.max(1, Math.min(1000, Number(p.get("page")) || 1))), limit: String(Math.max(1, Math.min(50, Number(p.get("limit")) || 20))) });
-      if (search) remoteParams.set("search", search);
-      const from = p.get("from"), to = p.get("to");
-      if (from && /^\d{4}-\d{2}-\d{2}$/.test(from)) remoteParams.set("from", from);
-      if (to && /^\d{4}-\d{2}-\d{2}$/.test(to)) remoteParams.set("to", to);
-      const remote = await marketplaceFetch(business.id, `/api/integration/merchant/orders?${remoteParams}`);
-      const parsed = parseMarketplaceResponse(remote, (payload) => parseRemoteOrders(payload, business.id));
-      const mapped = status === "feedback" ? parsed.orders.filter((order) => order.feedbackAt) : parsed.orders;
-      return NextResponse.json({ orders: mapped, hasMore: parsed.hasMore, page: parsed.page });
-    }
-    const page = Math.max(1, Math.min(1000, Number(p.get("page")) || 1));
-    const limit = Math.max(1, Math.min(50, Number(p.get("limit")) || 20));
-    const filters: SQL[] = [eq(orders.businessId, business.id)];
-    if (status === "active") filters.push(inArray(orders.status, ["new", "accepted", "preparing", "ready", "out_for_delivery"]));
-    else if (status === "cancelled") filters.push(inArray(orders.status, ["cancelled", "rejected"]));
-    else if (status === "feedback") filters.push(isNotNull(orders.feedbackAt));
-    else if (status !== "all") { if (!statuses.includes(status)) throw new ApiError("Invalid status."); filters.push(eq(orders.status, status)); }
-    if (search) filters.push(sql`${orders.orderNumber}::text LIKE ${`%${search.replace(/[^0-9]/g, "")}%`}`);
-    const from = p.get("from"), to = p.get("to");
-    if (from && /^\d{4}-\d{2}-\d{2}$/.test(from)) filters.push(gte(orders.createdAt, new Date(`${from}T00:00:00+05:30`)));
-    if (to && /^\d{4}-\d{2}-\d{2}$/.test(to)) filters.push(lt(orders.createdAt, new Date(new Date(`${to}T00:00:00+05:30`).getTime() + 86400000)));
-    const rows = await db.select().from(orders).where(and(...filters)).orderBy(desc(orders.createdAt)).limit(limit + 1).offset((page - 1) * limit);
-    const hasMore = rows.length > limit, selected = rows.slice(0, limit);
-    const items = selected.length ? await db.select().from(orderItems).where(inArray(orderItems.orderId, selected.map((o) => o.id))) : [];
-    return NextResponse.json({ orders: selected.map(({ idempotencyHash: _key, requestHash: _hash, ...order }) => ({ ...order, items: items.filter((item) => item.orderId === order.id) })), hasMore, page });
+    return NextResponse.json(await loadOrdersData(business, request.nextUrl.searchParams));
   } catch (error) { return fail(error, request); }
 }
 export async function PATCH(request: NextRequest) {

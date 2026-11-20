@@ -23,6 +23,7 @@ import { money, type AdvancedAnalytics, type AuthResponse, type AuthUser, type B
 type Page = "home" | "orders" | "service" | "menu" | "offers" | "reviews" | "staff" | "earnings" | "compliance" | "more";
 type User = AuthUser;
 type AuthData = AuthResponse;
+type WorkspaceBootstrapData = { overview: Overview; orders: Order[]; hasMore: boolean };
 type Filter = "active" | "all" | "new" | "accepted" | "preparing" | "ready" | "out_for_delivery" | "completed" | "cancelled" | "feedback";
 const emptyOverview: Overview = { counts: { new: 0, accepted: 0, preparing: 0, ready: 0, out_for_delivery: 0, completed: 0, cancelled: 0, rejected: 0 }, todaySales: 0, todayOrders: 0, completedToday: 0, settlements: [], settlementSync: { linked: false, status: "idle", lastSyncedAt: null }, feedback: { available: true, windowDays: 30, averageRating: null, reviewCount: 0, badOrders: 0, pendingReplies: 0 } };
 const emptyFeedback: FeedbackSummary = { available: true, windowDays: 30, averageRating: null, reviewCount: 0, badOrders: 0, pendingReplies: 0 };
@@ -98,14 +99,18 @@ function subscribeToNetwork(callback: () => void) {
 }
 function getNetworkStatus() { return navigator.onLine; }
 
-export default function MerchantApp() {
-  const [demo, setDemo] = useState(true), [user, setUser] = useState<User | null>(null), [verificationRequired, setVerificationRequired] = useState(false), [business, setBusiness] = useState<Business | null>(demoBusiness), [role, setRole] = useState<AppRole>("owner"), [businesses, setBusinesses] = useState<BusinessOption[]>([]);
-  const [orders, setOrders] = useState<Order[]>(() => makeDemoOrders()), [items, setItems] = useState<MenuItem[]>(demoMenu), [modifierGroups, setModifierGroups] = useState<MenuModifierGroup[]>(demoModifierGroups), [overview, setOverview] = useState<Overview>(emptyOverview), [offers, setOffers] = useState<Offer[]>(() => makeDemoOffers(makeDemoOrders()));
+export default function MerchantApp({ initialAuth, initialWorkspace }: { initialAuth: AuthData; initialWorkspace: WorkspaceBootstrapData | null }) {
+  // Server-rendered auth/data means a signed-in first paint is real data. Sample
+  // fixtures are only ever used for the public demo, never as a loading placeholder.
+  const signedIn = !!initialAuth.user;
+  const bootData = signedIn ? initialWorkspace : null;
+  const [demo, setDemo] = useState(!signedIn), [user, setUser] = useState<User | null>(initialAuth.user), [verificationRequired, setVerificationRequired] = useState(initialAuth.verificationRequired), [business, setBusiness] = useState<Business | null>(signedIn ? initialAuth.business : demoBusiness), [role, setRole] = useState<AppRole>(initialAuth.role ?? "owner"), [businesses, setBusinesses] = useState<BusinessOption[]>(initialAuth.businesses ?? []);
+  const [orders, setOrders] = useState<Order[]>(() => bootData ? bootData.orders : signedIn ? [] : makeDemoOrders()), [items, setItems] = useState<MenuItem[]>(signedIn ? [] : demoMenu), [modifierGroups, setModifierGroups] = useState<MenuModifierGroup[]>(signedIn ? [] : demoModifierGroups), [overview, setOverview] = useState<Overview>(() => bootData?.overview ?? emptyOverview), [offers, setOffers] = useState<Offer[]>(() => signedIn ? [] : makeDemoOffers(makeDemoOrders()));
   const [page, setPage] = useState<Page>("home"), [orderFilter, setOrderFilter] = useState<Filter>("active"), [homeFilter, setHomeFilter] = useState<"all" | "new" | "preparing" | "ready" | "out_for_delivery">("all");
-  const [search, setSearch] = useState(""), [debouncedSearch, setDebouncedSearch] = useState(""), [from, setFrom] = useState(""), [to, setTo] = useState(""), [orderPage, setOrderPage] = useState(1), [hasMore, setHasMore] = useState(false);
+  const [search, setSearch] = useState(""), [debouncedSearch, setDebouncedSearch] = useState(""), [from, setFrom] = useState(""), [to, setTo] = useState(""), [orderPage, setOrderPage] = useState(1), [hasMore, setHasMore] = useState(bootData?.hasMore ?? false);
   const [accountOpen, setAccountOpen] = useState(false), [profileOpen, setProfileOpen] = useState(false), [passwordOpen, setPasswordOpen] = useState(false), [setupOpen, setSetupOpen] = useState(false), [menuDialog, setMenuDialog] = useState<{ item: MenuItem | null } | null>(null), [modifierGroupDialog, setModifierGroupDialog] = useState<{ group: MenuModifierGroup | null } | null>(null), [decision, setDecision] = useState<{ order: Order; action: OrderAction } | null>(null), [fulfilmentDialog, setFulfilmentDialog] = useState<{ order: Order; fulfilment: "pickup" | "delivery" } | null>(null), [fulfilmentBusy, setFulfilmentBusy] = useState(""), [details, setDetails] = useState<Order | null>(null), [notificationsOpen, setNotificationsOpen] = useState(false), [helpOpen, setHelpOpen] = useState(false), [offerDialog, setOfferDialog] = useState<{ offer: Offer | null } | null>(null), [offerFilter, setOfferFilter] = useState<"active" | "archived">("active"), [offerBusy, setOfferBusy] = useState(""), [offersError, setOffersError] = useState(""), [staff, setStaff] = useState<StaffMember[]>([]), [staffEmail, setStaffEmail] = useState(""), [staffRole, setStaffRole] = useState<StaffRole>("server"), [staffBusy, setStaffBusy] = useState(""), [staffError, setStaffError] = useState("");
   const online = useSyncExternalStore(subscribeToNetwork, getNetworkStatus, () => true);
-  const [syncError, setSyncError] = useState(""), [toast, setToast] = useState(""), [busyStore, setBusyStore] = useState(false), [busyItem, setBusyItem] = useState(""), [busyGroup, setBusyGroup] = useState(""), [dataEpoch, setDataEpoch] = useState(0), [catalogEpoch, setCatalogEpoch] = useState(0), [soundEnabled, setSoundEnabled] = useState(() => typeof window !== "undefined" && localStorage.getItem("savour-sound") === "on"), [notificationPermission, setNotificationPermission] = useState(() => typeof Notification !== "undefined" ? Notification.permission : "default"), [menuError, setMenuError] = useState(""), [resendingVerification, setResendingVerification] = useState(false), [settlementBusy, setSettlementBusy] = useState(false), [feedbackBusy, setFeedbackBusy] = useState(""), [linkInvalid, setLinkInvalid] = useState(false);
+  const [syncError, setSyncError] = useState(""), [toast, setToast] = useState(""), [busyStore, setBusyStore] = useState(false), [busyItem, setBusyItem] = useState(""), [busyGroup, setBusyGroup] = useState(""), [dataEpoch, setDataEpoch] = useState(0), [soundEnabled, setSoundEnabled] = useState(() => typeof window !== "undefined" && localStorage.getItem("savour-sound") === "on"), [notificationPermission, setNotificationPermission] = useState(() => typeof Notification !== "undefined" ? Notification.permission : "default"), [menuError, setMenuError] = useState(""), [resendingVerification, setResendingVerification] = useState(false), [settlementBusy, setSettlementBusy] = useState(false), [feedbackBusy, setFeedbackBusy] = useState(""), [linkInvalid, setLinkInvalid] = useState(false);
   const [earningsTab, setEarningsTab] = useState<"overview" | "revenue" | "items" | "insights">("overview"), [revenuePreset, setRevenuePreset] = useState<RevenuePreset>("1m"), [revenueRange, setRevenueRange] = useState<RevenueRange>(() => rangeForPreset("1m"));
   const [revenue, setRevenue] = useState<RevenueSummary | null>(null), [revenueBusy, setRevenueBusy] = useState(false), [revenueError, setRevenueError] = useState("");
   const [itemReport, setItemReport] = useState<ItemAnalytics | null>(null), [itemReportBusy, setItemReportBusy] = useState(false), [itemReportError, setItemReportError] = useState("");
@@ -138,7 +143,9 @@ export default function MerchantApp() {
     if (key === orderQueryKey(orderQueryRef.current)) return;
     orderQueryRef.current = next;
     const cached = orderCacheRef.current.get(key);
-    if (cached) { setOrders(cached.orders); setHasMore(cached.hasMore); }
+    if (cached) { setOrders(cached.orders); setHasMore(cached.hasMore); return; }
+    // A warmed tab is served synchronously with no request. Only an uncached view
+    // fetches; the change poll refreshes the open tab when Marketplace data moves.
     loadOrdersRef.current?.();
   }, []);
   /** Explicit refresh/action revalidation: always issue a fresh request now. */
@@ -173,7 +180,6 @@ export default function MerchantApp() {
   // Check on mount; the setState in checkLink only resolves after the request settles.
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { void checkLink(); }, [checkLink]);
-  useEffect(() => { let active = true; api<AuthData>("/api/auth").then((data) => { if (active && data.user) activate(data); }).catch(() => { if (active) setSyncError("Couldn’t reach the server. Try again when you’re online."); }); return () => { active = false; }; }, [activate]);
   useEffect(() => {
     const reset = () => {
       setDemo(true); setUser(null); setVerificationRequired(false); setBusiness(demoBusiness); setRole("owner"); setBusinesses([]); setOutletMenuOpen(false); setAddOutletOpen(false);
@@ -192,13 +198,13 @@ export default function MerchantApp() {
     let active = true;
     api<{ items: MenuItem[]; modifierGroups: MenuModifierGroup[] }>("/api/merchant/menu").then((data) => { if (active) { setItems(data.items); setModifierGroups(data.modifierGroups); setMenuError(""); } }).catch((error) => { if (active && !(error instanceof Api401Error && error.sessionExpired)) setMenuError(error.message); });
     return () => { active = false; };
-  }, [demo, business?.id, dataEpoch, catalogEpoch, linkInvalid]);
+  }, [demo, business?.id, dataEpoch, linkInvalid]);
   useEffect(() => {
     if (demo || !business?.id) return;
     let active = true;
     api<{ offers: Offer[] }>("/api/merchant/offers").then((data) => { if (active) { setOffers(data.offers); setOffersError(""); } }).catch((error) => { if (active && !(error instanceof Api401Error && error.sessionExpired)) setOffersError(error.message); });
     return () => { active = false; };
-  }, [demo, business?.id, dataEpoch, catalogEpoch]);
+  }, [demo, business?.id, dataEpoch]);
   useEffect(() => {
     const refreshAfterLinkChange = () => { setDataEpoch((n) => n + 1); void checkLink(); };
     window.addEventListener("savour-marketplace-link-changed", refreshAfterLinkChange);
@@ -222,16 +228,19 @@ export default function MerchantApp() {
     };
 
     const prefetchFilters = async () => {
-      for (const status of ["all", "new", "accepted", "preparing", "ready", "out_for_delivery", "completed", "feedback", "cancelled"]) {
+      // Fetch the other tabs together instead of one-by-one; they only warm the
+      // cache and must not hold up the first render or a tab switch.
+      const warm = async (status: string) => {
         if (stopped) return;
         const query: OrderQuery = { status, page: 1, search: "", from: "", to: "" };
         const key = orderQueryKey(query);
-        if (orderCacheRef.current.has(key)) continue;
+        if (orderCacheRef.current.has(key)) return;
         try {
           const data = await api<{ orders: Order[]; hasMore: boolean }>(`/api/merchant/orders?${orderParams(query)}`);
           if (!stopped) orderCacheRef.current.set(key, data);
         } catch { /* Best effort: opening the tab revalidates it directly. */ }
-      }
+      };
+      await Promise.all(["all", "new", "accepted", "preparing", "ready", "out_for_delivery", "completed", "feedback", "cancelled"].map(warm));
     };
 
     const loadNow = (force = false) => {
@@ -786,10 +795,8 @@ export default function MerchantApp() {
     applyQuery(buildOrderQuery(next, nextFilter, nextPage, debouncedSearch, from, to));
     setPage(next);
     if (next === "orders") { setOrderPage(1); setOrderFilter(nextFilter); }
-    // Menu and offers are paired-aware reads that can be stale after an outage or
-    // a link change. Revalidate in the background on tab entry while keeping the
-    // last rendered data on screen, so the page never flashes empty.
-    if (next === "menu" || next === "offers") setCatalogEpoch((n) => n + 1);
+    // Menu and offers stay in state across tab switches; link changes already
+    // bump dataEpoch, so re-entering a tab needs no extra request.
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
   function toggleOutletMenu() {

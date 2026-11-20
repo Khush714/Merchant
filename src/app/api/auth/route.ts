@@ -4,45 +4,13 @@ import { db } from "@/db";
 import { users } from "@/db/schema";
 import { consumeAccountToken, createAccountToken, isAccountToken } from "@/lib/account-tokens";
 import { isEmailConfigured, sendPasswordResetEmail, sendVerificationEmail } from "@/lib/email";
-import { getMarketplaceLink } from "@/lib/marketplace-bridge";
-import { ApiError, BODY_LIMITS, businessForUser, businessesForUser, changePassword, createSession, currentUser, deleteAllSessions, deleteSession, fail, hashPassword, rateLimit, readJson, recordAudit, requireUser, sameOrigin, sessionContext, textValue, verificationRequired, verifyPassword } from "@/lib/server";
-import type { BusinessOption } from "@/lib/types";
+import { ApiError, BODY_LIMITS, changePassword, createSession, currentUser, deleteAllSessions, deleteSession, fail, hashPassword, rateLimit, readJson, recordAudit, requireUser, sameOrigin, sessionContext, textValue, verificationRequired, verifyPassword } from "@/lib/server";
+import { listingFor } from "@/lib/workspace-bootstrap";
 
 export const dynamic = "force-dynamic";
 
 function authUser(record: { id: string; email: string; emailVerifiedAt: Date | null }) {
   return { id: record.id, email: record.email, emailVerified: record.emailVerifiedAt !== null };
-}
-
-/** A paired Marketplace listing is already live; the local approval flag only tracks unlinked setup. */
-async function withListingStatus<T extends { id: string; approvalStatus: string }>(business: T | undefined | null, linked?: boolean) {
-  if (!business) return null;
-  const isLinked = linked ?? Boolean(await getMarketplaceLink(business.id));
-  return isLinked ? { ...business, approvalStatus: "approved" as const } : business;
-}
-
-/** Builds the auth payload for a user. A null active id means "use this account's first outlet". */
-export async function listingFor(userId: string, activeBusinessId?: string | null) {
-  const [active, available] = await Promise.all([
-    businessForUser(userId, activeBusinessId),
-    businessesForUser(userId),
-  ]);
-  const options: BusinessOption[] = await Promise.all(available.map(async ({ business, role }) => {
-    const linked = Boolean(await getMarketplaceLink(business.id));
-    return {
-      id: business.id,
-      name: business.name,
-      type: business.type as BusinessOption["type"],
-      approvalStatus: linked ? "approved" : business.approvalStatus as BusinessOption["approvalStatus"],
-      isOpen: business.isOpen,
-      role,
-      linked,
-    };
-  }));
-  const business = active
-    ? await withListingStatus(active.business, options.find((option) => option.id === active.business.id)?.linked)
-    : null;
-  return { business, role: active?.role ?? null, businesses: options };
 }
 
 export async function GET(request: NextRequest) {

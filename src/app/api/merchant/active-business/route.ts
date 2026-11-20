@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { listingFor } from "@/app/api/auth/route";
+import { listingFor } from "@/lib/workspace-bootstrap";
 import { ApiError, BODY_LIMITS, businessesForUser, fail, readJson, requireUser, sameOrigin, sessionContext, setActiveBusinessForSession, textValue, verificationRequired } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
