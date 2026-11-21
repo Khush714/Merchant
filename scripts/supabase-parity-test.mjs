@@ -1,14 +1,26 @@
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { randomBytes } from "node:crypto";
+import { config as loadEnv } from "dotenv";
+import { Client } from "pg";
 
 /**
  * The app deploys through `supabase db push` (supabase/migrations/) but tests and
  * runs locally through drizzle/*.sql. Both histories must build the same schema.
- * This check needs no database or credentials: it compares the schema footprint
- * (tables, columns, indexes and constraints) and verifies that both paths end
- * with RLS and Data API revokes.
+ *
+ * Two layers of checks:
+ *  1. Text footprints and the journal pair map (no database needed).
+ *  2. Fresh throwaway databases built from each history, then a comparison of the
+ *     resulting PostgreSQL catalog definitions: columns, types, defaults,
+ *     nullability, constraints (including FK actions), indexes, policies, RLS
+ *     flags, ACLs, extensions and any routines/triggers/views/sequences/types.
+ *
+ * Generated constraint and index names are normalised because Drizzle and
+ * Supabase name them differently; the definitions and behaviour must still match.
  */
+loadEnv({ path: ".env.local", quiet: true });
+
 const root = new URL("..", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
 const drizzleDir = join(root, "drizzle");
 const supabaseDir = join(root, "supabase/migrations");
@@ -106,4 +118,110 @@ assert.equal(
   "the RLS hardening migration must be identical on both paths",
 );
 
-console.log("PASS: supabase and drizzle migrations stay in sync");
+// --- Fresh-database catalog comparison ---------------------------------------------------------
+
+const CATALOG_QUERIES = {
+  tables: "select table_name from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE'",
+  columns: `select c.relname as table, a.attname as column, format_type(a.atttypid, a.atttypmod) as type,
+      a.attnotnull as not_null, pg_get_expr(d.adbin, d.adrelid) as default, a.attidentity as identity,
+      a.attgenerated as generated, (select collname from pg_collation where oid = a.attcollation) as collation,
+      col_description(a.attrelid, a.attnum) as comment
+    from pg_class c
+    join pg_namespace n on n.oid = c.relnamespace
+    join pg_attribute a on a.attrelid = c.oid and a.attnum > 0 and not a.attisdropped
+    left join pg_attrdef d on d.adrelid = c.oid and d.adnum = a.attnum
+    where n.nspname = 'public' and c.relkind in ('r', 'p')`,
+  // pg_get_constraintdef carries the full FK action / check expression / PK columns.
+  // Names are omitted: the two histories generate different names for identical constraints.
+  constraints: `select conrelid::regclass::text as table, contype, pg_get_constraintdef(oid) as definition,
+      condeferrable, condeferred, convalidated
+    from pg_constraint where connamespace = 'public'::regnamespace`,
+  // Strip the generated index name but keep uniqueness, method, columns, opclasses and predicates.
+  indexes: `select tablename,
+      regexp_replace(indexdef, '^CREATE (UNIQUE )?INDEX \\S+ ON ', 'CREATE \\1INDEX ON ') as definition
+    from pg_indexes where schemaname = 'public'`,
+  policies: `select tablename, policyname, permissive, roles, cmd, qual, with_check
+    from pg_policies where schemaname = 'public'`,
+  triggers: `select event_object_table, trigger_name, action_timing, event_manipulation, action_statement
+    from information_schema.triggers where trigger_schema = 'public'`,
+  routines: `select routine_name, data_type, routine_definition, external_language
+    from information_schema.routines where routine_schema = 'public'`,
+  otherRelations: `select relname, relkind from pg_class
+    where relnamespace = 'public'::regnamespace and relkind in ('v', 'm', 'S')`,
+  // Indexes are excluded here; their definitions are compared above.
+  relationSecurity: `select relname, relkind, relrowsecurity, relforcerowsecurity, relacl::text
+    from pg_class where relnamespace = 'public'::regnamespace and relkind in ('r', 'p', 'v', 'm', 'S')`,
+  extensions: "select extname, extversion from pg_extension",
+  types: `select t.typname, t.typtype, format_type(t.oid, null) as fmt
+    from pg_type t join pg_namespace n on n.oid = t.typnamespace
+    where n.nspname = 'public' and t.typtype in ('e', 'd')`,
+};
+
+function localConnectionString() {
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) throw new Error("Fresh-database parity introspection requires a local DATABASE_URL.");
+  const parsed = new URL(connectionString);
+  if (!["127.0.0.1", "localhost", "::1"].includes(parsed.hostname)) {
+    throw new Error("Refusing to create throwaway parity databases on a non-local DATABASE_URL.");
+  }
+  return connectionString;
+}
+
+async function withFreshDatabase(name, connectionString, callback) {
+  const adminUrl = new URL(connectionString);
+  adminUrl.pathname = "/postgres";
+  const scopedUrl = new URL(connectionString);
+  scopedUrl.pathname = `/${name}`;
+  const admin = new Client({ connectionString: adminUrl.toString() });
+  await admin.connect();
+  try {
+    await admin.query(`drop database if exists ${name} with (force)`);
+    await admin.query(`create database ${name}`);
+    const client = new Client({ connectionString: scopedUrl.toString() });
+    await client.connect();
+    try { return await callback(client); }
+    finally { await client.end().catch(() => {}); }
+  } finally {
+    try { await admin.query(`drop database if exists ${name} with (force)`); }
+    finally { await admin.end(); }
+  }
+}
+
+async function applyAndIntrospect(client, files) {
+  for (const file of files) await client.query(readFileSync(file, "utf8"));
+  const snapshot = {};
+  for (const [key, sql] of Object.entries(CATALOG_QUERIES)) {
+    const { rows } = await client.query(sql);
+    snapshot[key] = rows.map((row) => JSON.stringify(row)).sort();
+  }
+  return snapshot;
+}
+
+const connectionString = localConnectionString();
+const suffix = `${process.pid}_${randomBytes(4).toString("hex")}`;
+const drizzleFiles = PAIRS.map(([tag]) => join(drizzleDir, `${tag}.sql`));
+const supabaseFilesInOrder = [...PAIRS.map(([, name]) => `${name}.sql`), ...SUPABASE_ONLY].sort()
+  .map((name) => join(supabaseDir, name));
+
+const drizzleCatalog = await withFreshDatabase(
+  `parity_drizzle_${suffix}`,
+  connectionString,
+  (client) => applyAndIntrospect(client, drizzleFiles),
+);
+const supabaseCatalog = await withFreshDatabase(
+  `parity_supabase_${suffix}`,
+  connectionString,
+  (client) => applyAndIntrospect(client, supabaseFilesInOrder),
+);
+
+for (const key of Object.keys(CATALOG_QUERIES)) {
+  const onlyDrizzle = drizzleCatalog[key].filter((row) => !supabaseCatalog[key].includes(row));
+  const onlySupabase = supabaseCatalog[key].filter((row) => !drizzleCatalog[key].includes(row));
+  assert.equal(
+    onlyDrizzle.length + onlySupabase.length,
+    0,
+    `catalog drift in ${key}\n  drizzle only:\n    ${onlyDrizzle.join("\n    ")}\n  supabase only:\n    ${onlySupabase.join("\n    ")}`,
+  );
+}
+
+console.log("PASS: supabase and drizzle migrations stay in sync (text footprint and PostgreSQL catalog)");
