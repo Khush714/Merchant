@@ -68,6 +68,10 @@ function withoutLegacy(names) {
 
 const journal = JSON.parse(readFileSync(join(drizzleDir, "meta/_journal.json"), "utf8"));
 assert.deepEqual(journal.entries.map((entry) => entry.tag), PAIRS.map(([tag]) => tag), "drizzle journal and migration pair map must agree");
+assert.ok(
+  journal.entries.every((entry, index) => index === 0 || Number(entry.when) > Number(journal.entries[index - 1].when)),
+  "drizzle journal timestamps must strictly increase or the migrator can skip a later migration",
+);
 
 const supabaseFiles = readdirSync(supabaseDir).filter((name) => name.endsWith(".sql")).sort();
 assert.deepEqual(
