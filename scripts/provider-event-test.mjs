@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   parseProviderEvent, ProviderEventError, signatureHeader, verifyProviderSignature,
 } from "../src/lib/provider-events.ts";
+import { BodyLimitError, readBoundedText } from "../src/lib/body-limit.ts";
 
 const businessId = "11111111-1111-4111-8111-111111111111";
 const orderId = "22222222-2222-4222-8222-222222222222";
@@ -40,4 +41,55 @@ assert.throws(() => verifyProviderSignature(secret, raw, "t=1,v1=" + "0".repeat(
 assert.throws(() => verifyProviderSignature("too-short", raw, header), ProviderEventError);
 assert.throws(() => verifyProviderSignature(secret, raw, null), ProviderEventError);
 
-console.log("PASS: provider event validation and raw-body HMAC signatures");
+// Bounded raw-body reads: byte-accurate cap, early rejection, cancellation, exact HMAC bytes.
+const LIMIT = 8 * 1024;
+
+function countedBody(chunks, declaredLength) {
+  const headers = new Headers();
+  if (declaredLength !== undefined) headers.set("content-length", String(declaredLength));
+  const state = { readerCalls: 0, readCalls: 0, cancelled: false };
+  const stream = new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(new TextEncoder().encode(chunk));
+      controller.close();
+    },
+    cancel() { state.cancelled = true; },
+  });
+  const body = {
+    getReader() {
+      state.readerCalls++;
+      const reader = stream.getReader();
+      return {
+        read() { state.readCalls++; return reader.read(); },
+        cancel(reason) { return reader.cancel(reason); },
+        releaseLock() { reader.releaseLock(); },
+      };
+    },
+  };
+  return { source: { headers, body }, state };
+}
+
+const exact = "é".repeat(LIMIT / 2);
+const half = exact.length / 2;
+const exactBody = countedBody([exact.slice(0, half), exact.slice(half)]);
+const streamed = await readBoundedText(exactBody.source, LIMIT);
+assert.equal(streamed, exact);
+assert.equal(Buffer.byteLength(streamed, "utf8"), LIMIT);
+verifyProviderSignature(secret, streamed, signatureHeader(secret, exact, timestamp));
+
+const oversized = countedBody(["a".repeat(LIMIT), "b", "c".repeat(64)]);
+await assert.rejects(
+  () => readBoundedText(oversized.source, LIMIT, "Event payload is too large."),
+  (error) => error instanceof BodyLimitError && error.status === 413 && error.message === "Event payload is too large.",
+);
+assert.equal(oversized.state.readCalls, 2, "must stop reading once the cap is crossed");
+assert.equal(oversized.state.cancelled, true, "must cancel the stream on overflow");
+
+const declared = countedBody(["x".repeat(LIMIT + 1)], LIMIT + 1);
+await assert.rejects(() => readBoundedText(declared.source, LIMIT), BodyLimitError);
+assert.equal(declared.state.readerCalls, 0, "must reject oversized content-length before reading");
+
+const multibyte = countedBody(["é".repeat(LIMIT / 2 + 1)]);
+await assert.rejects(() => readBoundedText(multibyte.source, LIMIT), BodyLimitError);
+
+console.log("PASS: provider event validation, raw-body HMAC, and bounded body reads");

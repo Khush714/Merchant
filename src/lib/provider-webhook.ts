@@ -3,7 +3,7 @@ import "server-only";
 import { NextRequest, NextResponse } from "next/server";
 import { ProviderEventError, parseProviderEvent, verifyProviderSignature, type ProviderKind } from "@/lib/provider-events";
 import { applyProviderEvent } from "@/lib/provider-events-service";
-import { ApiError, BODY_LIMITS, fail, rateLimit, recordAudit, sha256 } from "@/lib/server";
+import { ApiError, BODY_LIMITS, fail, rateLimit, readRawBody, recordAudit, sha256 } from "@/lib/server";
 
 function secretFor(provider: ProviderKind) {
   return provider === "courier" ? process.env.COURIER_WEBHOOK_SECRET : process.env.PAYMENT_WEBHOOK_SECRET;
@@ -18,8 +18,7 @@ export async function handleProviderWebhook(request: NextRequest, provider: Prov
     if (!(request.headers.get("content-type") ?? "").toLowerCase().includes("application/json")) {
       throw new ApiError("Send a JSON body.", 415);
     }
-    const rawBody = await request.text();
-    if (rawBody.length > BODY_LIMITS.providerEvent) throw new ApiError("Event payload is too large.", 413);
+    const rawBody = await readRawBody(request, BODY_LIMITS.providerEvent, "Event payload is too large.");
     try {
       verifyProviderSignature(secret, rawBody, request.headers.get("x-savour-signature"));
     } catch (error) {

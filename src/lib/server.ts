@@ -9,6 +9,7 @@ import { auditLogs, businesses, sessions, staffMembers, users } from "@/db/schem
 import { can, isStaffRole, type AppRole, type Permission } from "@/lib/roles";
 import { isWithinBusinessHours } from "@/lib/service-config";
 import { logError, warn } from "@/lib/telemetry";
+import { BodyLimitError, readBoundedText } from "@/lib/body-limit";
 
 const scrypt = promisify(scryptCallback);
 const COOKIE = "savour_session";
@@ -325,30 +326,20 @@ export async function rateLimit(request: NextRequest, bucket: string, max = 30, 
     throw new ApiError("Too many requests. Please try again shortly.", 429);
   }
 }
+/** Bounded raw body read shared by JSON routes and signed provider webhooks. */
+export async function readRawBody(request: NextRequest, maxBytes: number, tooLargeMessage?: string): Promise<string> {
+  try {
+    return await readBoundedText(request, maxBytes, tooLargeMessage);
+  } catch (error) {
+    if (error instanceof BodyLimitError) throw new ApiError(error.message, error.status);
+    throw error;
+  }
+}
+
 export async function readJson<T = Record<string, any>>(request: NextRequest, maxBytes = 64 * 1024): Promise<T> {
   const contentType = request.headers.get("content-type");
   if (contentType && !/^application\/json(?:\s*;|$)/i.test(contentType)) throw new ApiError("Send the request body as JSON.", 415);
-  const declared = Number(request.headers.get("content-length") ?? "");
-  if (Number.isFinite(declared) && declared > maxBytes) throw new ApiError("Request body is too large.", 413);
-  if (!request.body) throw new ApiError("Request body is required.", 400);
-  const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        await reader.cancel().catch(() => {});
-        throw new ApiError("Request body is too large.", 413);
-      }
-      chunks.push(value);
-    }
-  } finally {
-    try { reader.releaseLock(); } catch { /* The stream may already be cancelled. */ }
-  }
-  const text = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
+  const text = await readRawBody(request, maxBytes);
   if (!text.trim()) throw new ApiError("Request body is required.", 400);
   try { return JSON.parse(text) as T; }
   catch { throw new ApiError("Invalid JSON request body.", 400); }
