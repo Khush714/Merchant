@@ -134,6 +134,20 @@
       "when": 1796500000005,
       "tag": "0018_compliance_money_docs",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1795315200003,
+      "tag": "0019_payment_ledger",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1795315200004,
+      "tag": "0020_financial_operations",
+      "breakpoints": true
     }
   ]
 }

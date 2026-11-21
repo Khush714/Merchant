@@ -1,4 +1,5 @@
 import type { AppRole, StaffRole } from "@/lib/roles";
+import type { PaymentState } from "@/lib/payment-state";
 import type { DayPart, DeliveryZone, ServicePoint, WeeklyDayHours } from "@/lib/service-config";
 
 export type { DayPart, DeliveryZone, ServicePoint, WeeklyDayHours } from "@/lib/service-config";
@@ -76,6 +77,15 @@ export type SettlementSync = {
   message?: string;
   canRetry?: boolean;
 };
+/** All-time paid settlement totals, independent of the latest-rows list shown in the UI. Money is in paise. */
+export type SettlementTotals = {
+  count: number;
+  gross: number;
+  fees: number;
+  refunds: number;
+  adjustments: number;
+  net: number;
+};
 /** Marketplace-owned totals for the selected revenue period; money is in paise. */
 export type RevenueSummary = {
   from: string | null;
@@ -86,6 +96,150 @@ export type RevenueSummary = {
   paidSettlements: number;
   currency: "INR";
 };
+/** A local/unpaired payment attempt shown in Earnings → Payments. */
+export type PaymentAttempt = {
+  id: string;
+  orderId: string;
+  orderNumber: number;
+  customerName: string;
+  providerReference: string;
+  amountPaise: number;
+  currency: "INR";
+  status: PaymentState;
+  failureCode: string;
+  failureMessage: string;
+  lastEventAt: string | null;
+  createdAt: string;
+};
+/** Payment inbox for the active outlet. Paired outlets report where authoritative state lives. */
+export type PaymentInbox = {
+  available: boolean;
+  notice: string;
+  attempts: PaymentAttempt[];
+  counts: Record<PaymentState, number>;
+  truncated: boolean;
+};
+
+/** Money components shared by the gross → net waterfall and statements. All values are paise. */
+export type MoneyBreakdown = {
+  grossPaise: number;
+  commissionPaise: number;
+  gatewayFeePaise: number;
+  taxPaise: number;
+  refundPaise: number;
+  adjustmentPaise: number;
+  netPaise: number;
+};
+
+export type FinanceSummary = MoneyBreakdown & {
+  settlementCount: number;
+  statementCount: number;
+  allocatedPaise: number;
+  unallocatedPaise: number;
+};
+
+export type RefundRecord = {
+  id: string;
+  orderNumber: string;
+  customerName: string;
+  amountPaise: number;
+  reason: string;
+  status: string;
+  providerRefundId: string;
+  note: string;
+  createdAt: string;
+  settledAt: string | null;
+};
+
+export type RefundInbox = {
+  available: boolean;
+  notice: string;
+  refunds: RefundRecord[];
+  canWrite: boolean;
+};
+
+export type SettlementLineRecord = MoneyBreakdown & {
+  id: string;
+  settlementId: string;
+  orderNumber: string;
+  source: string;
+  createdAt: string;
+};
+
+export type StatementRecord = MoneyBreakdown & {
+  id: string;
+  number: string;
+  periodFrom: string;
+  periodTo: string;
+  lineCount: number;
+  status: string;
+  checksum: string;
+  createdAt: string;
+};
+
+export type StatementDetail = StatementRecord & { lines: SettlementLineRecord[] };
+
+export type PayoutRecord = {
+  id: string;
+  reference: string;
+  methodLabel: string;
+  status: string;
+  amountPaise: number;
+  allocatedPaise: number;
+  source: string;
+  initiatedAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+};
+
+export type PayoutInbox = { available: boolean; notice: string; payouts: PayoutRecord[]; summary: { totalPaise: number; completedPaise: number; unallocatedPaise: number } };
+
+export type ReconciliationExceptionRecord = {
+  id: string;
+  kind: string;
+  severity: string;
+  status: string;
+  detail: string;
+  expectedPaise: number;
+  actualPaise: number;
+  orderNumber: string | null;
+  createdAt: string;
+};
+
+export type ReconciliationRunRecord = {
+  id: string;
+  startedAt: string;
+  finishedAt: string | null;
+  status: string;
+  orderCount: number;
+  paymentCount: number;
+  settlementCount: number;
+  payoutCount: number;
+  exceptionCount: number;
+};
+
+export type ReconciliationReportDto = {
+  available: boolean;
+  notice: string;
+  latestRun: ReconciliationRunRecord | null;
+  exceptions: ReconciliationExceptionRecord[];
+  counts: Record<string, number>;
+  summary: { matchedSettlements: number; allocatedSettlements: number; openExceptions: number };
+};
+
+export type FeeScheduleDto = {
+  id: string | null;
+  scope: string;
+  effectiveFrom: string;
+  commissionBps: number;
+  platformFixedPaise: number;
+  gatewayBps: number;
+  gatewayFixedPaise: number;
+  gstBps: number;
+  active: boolean;
+  inherited: boolean;
+};
+
 /** One menu item's sales in the selected range; money is in paise. */
 export type ItemAnalyticsRow = {
   itemId: string | null;
@@ -183,6 +337,8 @@ export type AdvancedAnalytics = {
   today: AnalyticsToday;
   hourly: AnalyticsHourRow[];
   products: AnalyticsProductRow[];
+  /** Lowest-unit products from the full menu, including items with zero sales. */
+  slowMovers: AnalyticsProductRow[];
   cancellations: AnalyticsReasonRow[];
   repeat: AnalyticsRepeat;
   delivery: AnalyticsDeliveryRow[];
@@ -198,6 +354,7 @@ export type Overview = {
   todaySales: number; todayOrders: number; completedToday: number; latestNewOrderId?: string | null;
   settlements: Settlement[];
   settlementSync: SettlementSync;
+  settlementTotals: SettlementTotals;
   feedback: FeedbackSummary;
 };
 /** `available` is false for connected listings whose Marketplace does not publish feedback metrics. */

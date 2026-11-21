@@ -5,10 +5,11 @@ import Link from "next/link";
 import { ArrowDownRight, ArrowRight, ArrowUpRight, BadgePercent, Bell, BellRing, Bike, BookOpen, CalendarDays, Check, CheckCircle2, ChefHat, ChevronDown, ChevronLeft, ChevronRight, CircleDollarSign, Clock3, CreditCard, Download, ExternalLink, Headphones, HelpCircle, Home, Info, KeyRound, LayoutGrid, Link2, LogOut, Mail, MapPin, Menu as MenuIcon, MoreHorizontal, PackageCheck, Plus, Search, Settings2, ShieldCheck, ShoppingBag, Sparkles, Star, Store, Trash2, Users, UtensilsCrossed, WifiOff, X } from "lucide-react";
 import { AccountModal, Api401Error, AUTH_EXPIRED_EVENT, api, DecisionModal, FulfilmentModal, MenuModal, ModifierGroupModal, Modal, OfferModal, PasswordModal, SetupModal, type MenuInput, type ModifierGroupInput } from "@/components/dialogs";
 import { BiDashboard } from "@/components/bi-dashboard";
+import { PaymentCheckoutModal } from "@/components/payment-checkout";
 import { BusinessSettings } from "@/components/business-settings";
+import { FinanceTabs, type EarningsTab } from "@/components/finance-tabs";
 import { ServiceSettings } from "@/components/service-settings";
 import { buildAdvancedAnalytics } from "@/lib/analytics-core";
-import { clearApiCache, seedCached, setCacheScope } from "@/lib/client-cache";
 import { Compliance } from "@/components/compliance";
 import { OrderCard, statusLabel, timeAgo, type OrderAction } from "@/components/order-card";
 import { demoBusiness, demoMenu, demoModifierGroups, demoOverview, makeDemoOffers, makeDemoOrders } from "@/lib/demo";
@@ -16,18 +17,18 @@ import { MARKETPLACE_LINK_INVALID } from "@/lib/marketplace-link-status";
 import { localItemAnalytics } from "@/lib/item-analytics-core";
 import { buildOrderQuery, matchesOrderStatus, orderParams, orderQueryKey, type CachedOrders, type OrderQuery } from "@/lib/order-query";
 import { discountLabel, isOfferLive } from "@/lib/offers";
+import { PAYMENT_STATE_LABEL } from "@/lib/payment-state";
 import { normalizeRevenueRange, rangeForPreset, revenueRangeLabel, REVENUE_PRESETS, type RevenuePreset, type RevenueRange } from "@/lib/revenue";
 import { can, ROLE_DESCRIPTIONS, ROLE_LABELS, STAFF_ROLES, type AppRole, type Permission, type StaffRole } from "@/lib/roles";
 import { indiaNow, isWithinBusinessHours } from "@/lib/service-config";
 import { localReviewThemes } from "@/lib/review-themes";
-import { money, type AdvancedAnalytics, type AuthResponse, type AuthUser, type Business, type BusinessOption, type FeedbackSummary, type ItemAnalytics, type MenuItem, type MenuModifierGroup, type Offer, type OfferInput, type Order, type OrderStatus, type Overview, type Review, type ReviewInbox, type ReviewTheme, type RevenueSummary, type StaffMember } from "@/lib/types";
+import { money, type AdvancedAnalytics, type AuthResponse, type AuthUser, type Business, type BusinessOption, type FeedbackSummary, type ItemAnalytics, type MenuItem, type MenuModifierGroup, type Offer, type OfferInput, type Order, type OrderStatus, type Overview, type PaymentAttempt, type PaymentInbox, type Review, type ReviewInbox, type ReviewTheme, type RevenueSummary, type StaffMember } from "@/lib/types";
 
 type Page = "home" | "orders" | "service" | "menu" | "offers" | "reviews" | "staff" | "earnings" | "compliance" | "more";
 type User = AuthUser;
 type AuthData = AuthResponse;
-type WorkspaceBootstrapData = { overview: Overview; orders: Order[]; hasMore: boolean };
 type Filter = "active" | "all" | "new" | "accepted" | "preparing" | "ready" | "out_for_delivery" | "completed" | "cancelled" | "feedback";
-const emptyOverview: Overview = { counts: { new: 0, accepted: 0, preparing: 0, ready: 0, out_for_delivery: 0, completed: 0, cancelled: 0, rejected: 0 }, todaySales: 0, todayOrders: 0, completedToday: 0, settlements: [], settlementSync: { linked: false, status: "idle", lastSyncedAt: null }, feedback: { available: true, windowDays: 30, averageRating: null, reviewCount: 0, badOrders: 0, pendingReplies: 0 } };
+const emptyOverview: Overview = { counts: { new: 0, accepted: 0, preparing: 0, ready: 0, out_for_delivery: 0, completed: 0, cancelled: 0, rejected: 0 }, todaySales: 0, todayOrders: 0, completedToday: 0, settlements: [], settlementSync: { linked: false, status: "idle", lastSyncedAt: null }, settlementTotals: { count: 0, gross: 0, fees: 0, refunds: 0, adjustments: 0, net: 0 }, feedback: { available: true, windowDays: 30, averageRating: null, reviewCount: 0, badOrders: 0, pendingReplies: 0 } };
 const emptyFeedback: FeedbackSummary = { available: true, windowDays: 30, averageRating: null, reviewCount: 0, badOrders: 0, pendingReplies: 0 };
 const navItems: { id: Page; label: string; icon: typeof Home; permission?: Permission }[] = [
   { id: "home", label: "Home", icon: Home },
@@ -41,6 +42,9 @@ const navItems: { id: Page; label: string; icon: typeof Home; permission?: Permi
   { id: "compliance", label: "Compliance", icon: ShieldCheck, permission: "compliance.read" },
   { id: "more", label: "More", icon: LayoutGrid },
 ];
+const primaryNavIds = new Set<Page>(["home", "orders", "menu", "offers"]);
+const primaryNav = navItems.filter((item) => primaryNavIds.has(item.id));
+const overflowNav = navItems.filter((item) => !primaryNavIds.has(item.id));
 const filters: { id: Filter; label: string }[] = [{ id: "active", label: "Active" }, { id: "new", label: "New" }, { id: "accepted", label: "Accepted" }, { id: "preparing", label: "Preparing" }, { id: "ready", label: "Ready" }, { id: "out_for_delivery", label: "Out for delivery" }, { id: "completed", label: "Completed" }, { id: "feedback", label: "Feedback" }, { id: "cancelled", label: "Cancelled" }, { id: "all", label: "All" }];
 
 function initials(name: string) { return name.split(" ").filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "S"; }
@@ -101,22 +105,20 @@ function subscribeToNetwork(callback: () => void) {
 }
 function getNetworkStatus() { return navigator.onLine; }
 
-export default function MerchantApp({ initialAuth, initialWorkspace }: { initialAuth: AuthData; initialWorkspace: WorkspaceBootstrapData | null }) {
-  // Server-rendered auth/data means a signed-in first paint is real data. Sample
-  // fixtures are only ever used for the public demo, never as a loading placeholder.
-  const signedIn = !!initialAuth.user;
-  const bootData = signedIn ? initialWorkspace : null;
-  const [demo, setDemo] = useState(!signedIn), [user, setUser] = useState<User | null>(initialAuth.user), [verificationRequired, setVerificationRequired] = useState(initialAuth.verificationRequired), [business, setBusiness] = useState<Business | null>(signedIn ? initialAuth.business : demoBusiness), [role, setRole] = useState<AppRole>(initialAuth.role ?? "owner"), [businesses, setBusinesses] = useState<BusinessOption[]>(initialAuth.businesses ?? []);
-  const [orders, setOrders] = useState<Order[]>(() => bootData ? bootData.orders : signedIn ? [] : makeDemoOrders()), [items, setItems] = useState<MenuItem[]>(signedIn ? [] : demoMenu), [modifierGroups, setModifierGroups] = useState<MenuModifierGroup[]>(signedIn ? [] : demoModifierGroups), [overview, setOverview] = useState<Overview>(() => bootData?.overview ?? emptyOverview), [offers, setOffers] = useState<Offer[]>(() => signedIn ? [] : makeDemoOffers(makeDemoOrders()));
+export default function MerchantApp() {
+  const [demo, setDemo] = useState(true), [user, setUser] = useState<User | null>(null), [verificationRequired, setVerificationRequired] = useState(false), [business, setBusiness] = useState<Business | null>(demoBusiness), [role, setRole] = useState<AppRole>("owner"), [businesses, setBusinesses] = useState<BusinessOption[]>([]);
+  const [orders, setOrders] = useState<Order[]>(() => makeDemoOrders()), [items, setItems] = useState<MenuItem[]>(demoMenu), [modifierGroups, setModifierGroups] = useState<MenuModifierGroup[]>(demoModifierGroups), [overview, setOverview] = useState<Overview>(emptyOverview), [offers, setOffers] = useState<Offer[]>(() => makeDemoOffers(makeDemoOrders()));
   const [page, setPage] = useState<Page>("home"), [orderFilter, setOrderFilter] = useState<Filter>("active"), [homeFilter, setHomeFilter] = useState<"all" | "new" | "preparing" | "ready" | "out_for_delivery">("all");
-  const [search, setSearch] = useState(""), [debouncedSearch, setDebouncedSearch] = useState(""), [from, setFrom] = useState(""), [to, setTo] = useState(""), [orderPage, setOrderPage] = useState(1), [hasMore, setHasMore] = useState(bootData?.hasMore ?? false);
+  const [search, setSearch] = useState(""), [debouncedSearch, setDebouncedSearch] = useState(""), [from, setFrom] = useState(""), [to, setTo] = useState(""), [orderPage, setOrderPage] = useState(1), [hasMore, setHasMore] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false), [profileOpen, setProfileOpen] = useState(false), [passwordOpen, setPasswordOpen] = useState(false), [setupOpen, setSetupOpen] = useState(false), [menuDialog, setMenuDialog] = useState<{ item: MenuItem | null } | null>(null), [modifierGroupDialog, setModifierGroupDialog] = useState<{ group: MenuModifierGroup | null } | null>(null), [decision, setDecision] = useState<{ order: Order; action: OrderAction } | null>(null), [fulfilmentDialog, setFulfilmentDialog] = useState<{ order: Order; fulfilment: "pickup" | "delivery" } | null>(null), [fulfilmentBusy, setFulfilmentBusy] = useState(""), [details, setDetails] = useState<Order | null>(null), [notificationsOpen, setNotificationsOpen] = useState(false), [helpOpen, setHelpOpen] = useState(false), [offerDialog, setOfferDialog] = useState<{ offer: Offer | null } | null>(null), [offerFilter, setOfferFilter] = useState<"active" | "archived">("active"), [offerBusy, setOfferBusy] = useState(""), [offersError, setOffersError] = useState(""), [staff, setStaff] = useState<StaffMember[]>([]), [staffEmail, setStaffEmail] = useState(""), [staffRole, setStaffRole] = useState<StaffRole>("server"), [staffBusy, setStaffBusy] = useState(""), [staffError, setStaffError] = useState("");
   const online = useSyncExternalStore(subscribeToNetwork, getNetworkStatus, () => true);
-  const [syncError, setSyncError] = useState(""), [toast, setToast] = useState(""), [busyStore, setBusyStore] = useState(false), [busyItem, setBusyItem] = useState(""), [busyGroup, setBusyGroup] = useState(""), [dataEpoch, setDataEpoch] = useState(0), [soundEnabled, setSoundEnabled] = useState(() => typeof window !== "undefined" && localStorage.getItem("savour-sound") === "on"), [notificationPermission, setNotificationPermission] = useState(() => typeof Notification !== "undefined" ? Notification.permission : "default"), [menuError, setMenuError] = useState(""), [resendingVerification, setResendingVerification] = useState(false), [settlementBusy, setSettlementBusy] = useState(false), [feedbackBusy, setFeedbackBusy] = useState(""), [linkInvalid, setLinkInvalid] = useState(false);
-  const [earningsTab, setEarningsTab] = useState<"overview" | "revenue" | "items" | "insights">("overview"), [revenuePreset, setRevenuePreset] = useState<RevenuePreset>("1m"), [revenueRange, setRevenueRange] = useState<RevenueRange>(() => rangeForPreset("1m"));
+  const [syncError, setSyncError] = useState(""), [toast, setToast] = useState(""), [busyStore, setBusyStore] = useState(false), [busyItem, setBusyItem] = useState(""), [busyGroup, setBusyGroup] = useState(""), [dataEpoch, setDataEpoch] = useState(0), [catalogEpoch, setCatalogEpoch] = useState(0), [soundEnabled, setSoundEnabled] = useState(() => typeof window !== "undefined" && localStorage.getItem("savour-sound") === "on"), [notificationPermission, setNotificationPermission] = useState(() => typeof Notification !== "undefined" ? Notification.permission : "default"), [menuError, setMenuError] = useState(""), [resendingVerification, setResendingVerification] = useState(false), [settlementBusy, setSettlementBusy] = useState(false), [feedbackBusy, setFeedbackBusy] = useState(""), [linkInvalid, setLinkInvalid] = useState(false);
+  const [overflowOpen, setOverflowOpen] = useState(false);
+  const [earningsTab, setEarningsTab] = useState<EarningsTab>("overview"), [revenuePreset, setRevenuePreset] = useState<RevenuePreset>("1m"), [revenueRange, setRevenueRange] = useState<RevenueRange>(() => rangeForPreset("1m"));
   const [revenue, setRevenue] = useState<RevenueSummary | null>(null), [revenueBusy, setRevenueBusy] = useState(false), [revenueError, setRevenueError] = useState("");
   const [itemReport, setItemReport] = useState<ItemAnalytics | null>(null), [itemReportBusy, setItemReportBusy] = useState(false), [itemReportError, setItemReportError] = useState("");
   const [analytics, setAnalytics] = useState<AdvancedAnalytics | null>(null), [analyticsBusy, setAnalyticsBusy] = useState(false), [analyticsError, setAnalyticsError] = useState("");
+  const [paymentInbox, setPaymentInbox] = useState<PaymentInbox | null>(null), [paymentBusy, setPaymentBusy] = useState(false), [paymentError, setPaymentError] = useState(""), [paymentConfirmBusy, setPaymentConfirmBusy] = useState(""), [checkoutOrderId, setCheckoutOrderId] = useState<string | null>(null);
   const [reviews, setReviews] = useState<Review[]>([]), [reviewSummary, setReviewSummary] = useState<FeedbackSummary>(emptyFeedback), [reviewThemes, setReviewThemes] = useState<ReviewTheme[]>([]), [reviewsBusy, setReviewsBusy] = useState(false), [reviewsError, setReviewsError] = useState(""), [reviewReplyBusy, setReviewReplyBusy] = useState("");
   const [feedbackRefreshKey, setFeedbackRefreshKey] = useState(0);
   const [outletMenuOpen, setOutletMenuOpen] = useState(false), [switchingOutlet, setSwitchingOutlet] = useState(false), [addOutletOpen, setAddOutletOpen] = useState(false);
@@ -129,53 +131,10 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
   const orderCacheRef = useRef<Map<string, CachedOrders>>(new Map());
   const loadOrdersRef = useRef<((force?: boolean) => void) | null>(null);
   const [actionBusy, setActionBusy] = useState<Record<string, boolean>>({});
-  const soundEnabledRef = useRef(soundEnabled);
-
-  // One shared browser cache for every tab: scope it to the signed-in outlet,
-  // then seed it with the server-rendered first screen so even the first click
-  // is a local read. All remaining tabs are warmed in parallel after paint.
-  useEffect(() => {
-    setCacheScope(demo || !user?.id ? "anonymous" : `${user.id}:${business?.id ?? "none"}`);
-  }, [demo, user?.id, business?.id]);
-  useEffect(() => {
-    if (!bootData || demo) return;
-    seedCached("/api/merchant/overview", { business: initialAuth.business, overview: bootData.overview });
-    seedCached(`/api/merchant/orders?${orderParams(buildOrderQuery("home", "active", 1, "", "", ""))}`, { orders: bootData.orders, hasMore: bootData.hasMore });
-  }, [bootData, demo, initialAuth.business]);
-  useEffect(() => {
-    if (demo || !business?.id) return;
-    const handle = window.setTimeout(() => {
-      const range = new URLSearchParams();
-      if (revenueRange.from && revenueRange.to) { range.set("from", revenueRange.from); range.set("to", revenueRange.to); }
-      const jobs: Array<() => Promise<unknown>> = [
-        () => api("/api/merchant/menu"),
-        () => api("/api/merchant/offers"),
-        () => api("/api/merchant/marketplace-link"),
-      ];
-      if (can(role, "staff.write")) jobs.push(() => api("/api/merchant/staff"));
-      if (can(role, "feedback.write")) jobs.push(() => api("/api/merchant/feedback"));
-      if (can(role, "compliance.read")) jobs.push(
-        () => api("/api/merchant/compliance"),
-        () => api("/api/merchant/compliance/payout"),
-        () => api("/api/merchant/compliance/invoices?"),
-      );
-      if (can(role, "settlements.read")) jobs.push(
-        () => api(`/api/merchant/revenue?${range}`),
-        () => api(`/api/merchant/item-analytics?${range}`),
-        () => api(`/api/merchant/analytics?${range}`),
-      );
-      for (const status of ["all", "new", "accepted", "preparing", "ready", "out_for_delivery", "completed", "feedback", "cancelled"]) {
-        jobs.push(() => api(`/api/merchant/orders?${orderParams({ status, page: 1, search: "", from: "", to: "" })}`));
-      }
-      jobs.forEach((job) => { void job().catch(() => {}); });
-    }, 120);
-    return () => window.clearTimeout(handle);
-  }, [demo, business?.id, role, revenueRange.from, revenueRange.to]);
-  useEffect(() => { soundEnabledRef.current = soundEnabled; }, [soundEnabled]);
 
   const activate = useCallback((data: AuthData, openSetup = true) => {
     if (!data.user) return;
-    setDemo(false); setUser(data.user); setVerificationRequired(data.verificationRequired); setBusiness(data.business); setRole(data.role ?? "owner"); setBusinesses(data.businesses ?? []); setOrders([]); setItems([]); setOverview(emptyOverview); setOffers([]); setOffersError(""); setRevenue(null); setRevenueError(""); setItemReport(null); setItemReportError(""); setReviews([]); setReviewSummary(emptyFeedback); setReviewThemes([]); setReviewsError(""); setStaff([]); setStaffError(""); setOfferFilter("active"); setPage("home"); setAccountOpen(false); setLinkInvalid(false); lastNewCount.current = null; lastNewId.current = null; versionRef.current = null; reviewCountsRef.current = null; orderCacheRef.current.clear(); orderQueryRef.current = buildOrderQuery("home", "active", 1, "", "", "");
+    setDemo(false); setUser(data.user); setVerificationRequired(data.verificationRequired); setBusiness(data.business); setRole(data.role ?? "owner"); setBusinesses(data.businesses ?? []); setOrders([]); setItems([]); setOverview(emptyOverview); setOffers([]); setOffersError(""); setRevenue(null); setRevenueError(""); setItemReport(null); setItemReportError(""); setPaymentInbox(null); setPaymentError(""); setPaymentConfirmBusy(""); setReviews([]); setReviewSummary(emptyFeedback); setReviewThemes([]); setReviewsError(""); setStaff([]); setStaffError(""); setOfferFilter("active"); setPage("home"); setAccountOpen(false); setLinkInvalid(false); lastNewCount.current = null; lastNewId.current = null; versionRef.current = null; reviewCountsRef.current = null; orderCacheRef.current.clear(); orderQueryRef.current = buildOrderQuery("home", "active", 1, "", "", "");
     if (openSetup && (!data.business || data.business.approvalStatus === "draft")) setSetupOpen(true);
   }, []);
   /**
@@ -188,9 +147,7 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
     if (key === orderQueryKey(orderQueryRef.current)) return;
     orderQueryRef.current = next;
     const cached = orderCacheRef.current.get(key);
-    if (cached) { setOrders(cached.orders); setHasMore(cached.hasMore); return; }
-    // A warmed tab is served synchronously with no request. Only an uncached view
-    // fetches; the change poll refreshes the open tab when Marketplace data moves.
+    if (cached) { setOrders(cached.orders); setHasMore(cached.hasMore); }
     loadOrdersRef.current?.();
   }, []);
   /** Explicit refresh/action revalidation: always issue a fresh request now. */
@@ -225,6 +182,7 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
   // Check on mount; the setState in checkLink only resolves after the request settles.
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { void checkLink(); }, [checkLink]);
+  useEffect(() => { let active = true; api<AuthData>("/api/auth").then((data) => { if (active && data.user) activate(data); }).catch(() => { if (active) setSyncError("Couldn’t reach the server. Try again when you’re online."); }); return () => { active = false; }; }, [activate]);
   useEffect(() => {
     const reset = () => {
       setDemo(true); setUser(null); setVerificationRequired(false); setBusiness(demoBusiness); setRole("owner"); setBusinesses([]); setOutletMenuOpen(false); setAddOutletOpen(false);
@@ -243,13 +201,13 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
     let active = true;
     api<{ items: MenuItem[]; modifierGroups: MenuModifierGroup[] }>("/api/merchant/menu").then((data) => { if (active) { setItems(data.items); setModifierGroups(data.modifierGroups); setMenuError(""); } }).catch((error) => { if (active && !(error instanceof Api401Error && error.sessionExpired)) setMenuError(error.message); });
     return () => { active = false; };
-  }, [demo, business?.id, dataEpoch, linkInvalid]);
+  }, [demo, business?.id, dataEpoch, catalogEpoch, linkInvalid]);
   useEffect(() => {
     if (demo || !business?.id) return;
     let active = true;
     api<{ offers: Offer[] }>("/api/merchant/offers").then((data) => { if (active) { setOffers(data.offers); setOffersError(""); } }).catch((error) => { if (active && !(error instanceof Api401Error && error.sessionExpired)) setOffersError(error.message); });
     return () => { active = false; };
-  }, [demo, business?.id, dataEpoch]);
+  }, [demo, business?.id, dataEpoch, catalogEpoch]);
   useEffect(() => {
     const refreshAfterLinkChange = () => { setDataEpoch((n) => n + 1); void checkLink(); };
     window.addEventListener("savour-marketplace-link-changed", refreshAfterLinkChange);
@@ -257,7 +215,7 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
   }, [checkLink]);
   useEffect(() => {
     if (demo || !business?.id || linkInvalid) return;
-    let stopped = false, failures = 0, checking = false, forceNext = true, pendingForce = false, initialOverviewRefresh = true;
+    let stopped = false, failures = 0, checking = false, forceNext = true, pendingForce = false, prefetched = false;
     let timer: ReturnType<typeof setTimeout>;
     let inFlight: AbortController | null = null;
     let inFlightKey = "";
@@ -272,6 +230,19 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
       }
     };
 
+    const prefetchFilters = async () => {
+      for (const status of ["all", "new", "accepted", "preparing", "ready", "out_for_delivery", "completed", "feedback", "cancelled"]) {
+        if (stopped) return;
+        const query: OrderQuery = { status, page: 1, search: "", from: "", to: "" };
+        const key = orderQueryKey(query);
+        if (orderCacheRef.current.has(key)) continue;
+        try {
+          const data = await api<{ orders: Order[]; hasMore: boolean }>(`/api/merchant/orders?${orderParams(query)}`);
+          if (!stopped) orderCacheRef.current.set(key, data);
+        } catch { /* Best effort: opening the tab revalidates it directly. */ }
+      }
+    };
+
     const loadNow = (force = false) => {
       if (stopped || !navigator.onLine || document.hidden) { pendingForce = true; return; }
       const query = orderQueryRef.current;
@@ -281,20 +252,15 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
       const controller = new AbortController();
       inFlight = controller;
       inFlightKey = key;
-      // The first poll runs the bounded settlement sync in the background while
-      // the server-rendered snapshot stays on screen. Explicit refreshes always
-      // hit the network; change-driven reads use stale-while-revalidate.
-      const overviewRefresh = initialOverviewRefresh || force;
-      initialOverviewRefresh = false;
       Promise.all([
-        api<{ business: Business; overview: Overview }>("/api/merchant/overview", { signal: controller.signal, refresh: overviewRefresh }),
-        api<{ orders: Order[]; hasMore: boolean }>(`/api/merchant/orders?${orderParams(query)}`, { signal: controller.signal, refresh: force }),
+        api<{ business: Business; overview: Overview }>("/api/merchant/overview", { signal: controller.signal }),
+        api<{ orders: Order[]; hasMore: boolean }>(`/api/merchant/orders?${orderParams(query)}`, { signal: controller.signal }),
       ]).then(([overviewData, orderData]) => {
         if (stopped) return;
         const newCount = overviewData.overview.counts.new;
         if (lastNewCount.current !== null && (newCount > lastNewCount.current || (newCount === lastNewCount.current && newCount > 0 && lastNewId.current && overviewData.overview.latestNewOrderId && lastNewId.current !== overviewData.overview.latestNewOrderId))) {
           setToast("A new order needs your attention.");
-          if (soundEnabledRef.current) playAlert();
+          if (soundEnabled) playAlert();
           if ("Notification" in window && Notification.permission === "granted") { try { new Notification("New order on Savour", { body: "Open your workspace to review it." }); } catch { /* Notifications may be unavailable in this browser. */ } }
         }
         const nextFeedback = overviewData.overview.feedback;
@@ -309,6 +275,7 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
         setOverview(overviewData.overview);
         writeOrders(key, { orders: orderData.orders, hasMore: orderData.hasMore });
         setSyncError(""); failures = 0;
+        if (!prefetched) { prefetched = true; void prefetchFilters(); }
       }).catch((error) => {
         if (stopped || controller.signal.aborted) return;
         if (error instanceof Api401Error) {
@@ -375,18 +342,12 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
       window.removeEventListener("focus", refreshNow);
       window.removeEventListener("savour-marketplace-link-changed", refreshNow);
     };
-  }, [demo, business?.id, online, linkInvalid]);
+  }, [demo, business?.id, soundEnabled, online, linkInvalid]);
 
   const vendor = business?.type === "vendor";
   const stats = demo ? demoOverview(orders) : overview;
-  const paidSettlements = useMemo(() => stats.settlements.filter((settlement) => settlement.status === "paid"), [stats.settlements]);
-  const settlementTotals = useMemo(() => paidSettlements.reduce((totals, settlement) => ({
-    net: totals.net + settlement.netAmount,
-    gross: totals.gross + settlement.grossAmount,
-    fees: totals.fees + settlement.commissionAmount,
-    refunds: totals.refunds + settlement.refundAmount,
-    adjustments: totals.adjustments + settlement.adjustmentAmount,
-  }), { net: 0, gross: 0, fees: 0, refunds: 0, adjustments: 0 }), [paidSettlements]);
+  // Server aggregates every saved paid settlement; the 50-row list is only a preview.
+  const settlementTotals = stats.settlementTotals;
   const revenueForView = demo ? demoRevenue(orders, revenueRange) : revenue;
   const itemReportForView = useMemo(() => demo ? demoItemReport(orders, revenueRange) : itemReport, [demo, orders, revenueRange, itemReport]);
   const demoAnalytics = useMemo(() => {
@@ -451,6 +412,20 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
     return () => { stopped = true; controller.abort(); };
   }, [page, earningsTab, demo, business?.id, role, revenueRange, dataEpoch]);
   useEffect(() => {
+    if (page !== "earnings" || earningsTab !== "payments" || demo || !business?.id || !can(role, "payments.read")) return;
+    let stopped = false;
+    const controller = new AbortController();
+    api<PaymentInbox>("/api/merchant/payments", { signal: controller.signal })
+      .then((data) => { if (!stopped) { setPaymentInbox(data); setPaymentError(""); } })
+      .catch((error) => {
+        if (stopped) return;
+        if (error instanceof Api401Error && error.sessionExpired) return;
+        setPaymentError(error instanceof Error ? error.message : "Could not load payments.");
+      })
+      .finally(() => { if (!stopped) setPaymentBusy(false); });
+    return () => { stopped = true; controller.abort(); };
+  }, [page, earningsTab, demo, business?.id, role, dataEpoch]);
+  useEffect(() => {
     if (page !== "earnings" || earningsTab !== "insights" || demo || !business?.id || !can(role, "settlements.read") || linkInvalid) return;
     let stopped = false;
     const controller = new AbortController();
@@ -487,7 +462,8 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
       .finally(() => { if (!stopped) setReviewsBusy(false); });
     return () => { stopped = true; controller.abort(); };
   }, [page, demo, business?.id, role, feedbackRefreshKey, linkInvalid, dataEpoch]);
-  const visibleNav = navItems.filter((item) => (!vendor || item.id !== "more") && (!item.permission || can(role, item.permission)));
+  const visiblePrimaryNav = primaryNav.filter((item) => !item.permission || can(role, item.permission));
+  const visibleOverflowNav = overflowNav.filter((item) => !item.permission || can(role, item.permission));
   useEffect(() => {
     if (demo || !business?.id || !can(role, "staff.write")) return;
     let active = true;
@@ -555,11 +531,26 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
   async function confirmOrder(prepMinutes: number, reason: string) {
     if (!decision) return;
     const { order, action } = decision;
-    const patch = { prepMinutes: action === "accepted" ? prepMinutes : order.prepMinutes, rejectionReason: action === "rejected" ? reason : order.rejectionReason };
+    const cancellation = action === "rejected" || action === "cancelled";
+    const patch = { prepMinutes: action === "accepted" ? prepMinutes : order.prepMinutes, rejectionReason: cancellation ? reason : order.rejectionReason };
+    const rollback = { prepMinutes: order.prepMinutes, rejectionReason: order.rejectionReason };
     if (demo) { applyOrderLocally(order, action as OrderStatus, patch); setToast(`Sample order #${order.orderNumber} updated.`); return; }
     applyOrderLocally(order, action as OrderStatus, patch);
-    try { await api("/api/merchant/orders", { method: "PATCH", body: JSON.stringify({ id: order.id, expectedStatus: order.status, nextStatus: action, prepMinutes, reason }) }); setToast(`Order #${order.orderNumber} updated.`); revalidateOrders(); }
-    catch (error) { applyOrderLocally(order, order.status, { prepMinutes: order.prepMinutes, rejectionReason: order.rejectionReason }); revalidateOrders(); throw error; }
+    try {
+      if (cancellation) {
+        // Reject and cancel both go through the ledger service: paired outlets are sent upstream.
+        const result = await api<{ status: string; notice: string; refundRequested: boolean }>(`/api/merchant/orders/${order.id}/cancel`, {
+          method: "POST", body: JSON.stringify({ expectedStatus: order.status, nextStatus: action, reason }),
+        });
+        applyOrderLocally(order, (result.status as OrderStatus) || action as OrderStatus, patch);
+        setToast(result.notice || `Order #${order.orderNumber} ${action === "rejected" ? "rejected" : "cancelled"}.`);
+      } else {
+        await api("/api/merchant/orders", { method: "PATCH", body: JSON.stringify({ id: order.id, expectedStatus: order.status, nextStatus: action, prepMinutes, reason }) });
+        setToast(`Order #${order.orderNumber} updated.`);
+      }
+      revalidateOrders();
+      setDataEpoch((n) => n + 1);
+    } catch (error) { applyOrderLocally(order, order.status, rollback); revalidateOrders(); throw error; }
   }
   async function changeFulfilment(order: Order, fulfilment: "pickup" | "delivery", addressText?: string) {
     setFulfilmentBusy(order.id);
@@ -612,7 +603,7 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
   }
   async function handleOrderAction(order: Order, action: OrderAction) {
     // Accept needs a prep time and reject needs a reason; both use the small dialog.
-    if (action === "rejected" || action === "accepted") { setDecision({ order, action }); return; }
+    if (action === "rejected" || action === "cancelled" || action === "accepted") { setDecision({ order, action }); return; }
     if (actionBusyRef.current.has(order.id) || order.status === action) return;
     actionBusyRef.current.add(order.id);
     setActionBusy((current) => ({ ...current, [order.id]: true }));
@@ -687,7 +678,7 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
     }
     const data = await api<{ business: Business }>("/api/merchant/business", { method: "PATCH", body: JSON.stringify(payload) }); setBusiness(data.business);
   }
-  async function endSession(action: "logout" | "logout-all", message: string) { try { await api("/api/auth", { method: "POST", body: JSON.stringify({ action }) }); clearApiCache(); setCacheScope("anonymous"); setDemo(true); setUser(null); setVerificationRequired(false); setBusiness(demoBusiness); setBusinesses([]); setOutletMenuOpen(false); setAddOutletOpen(false); setOrders(makeDemoOrders()); setItems(demoMenu); setPage("home"); setToast(message); } catch (err) { setToast(err instanceof Error ? err.message : "Could not sign out."); } }
+  async function endSession(action: "logout" | "logout-all", message: string) { try { await api("/api/auth", { method: "POST", body: JSON.stringify({ action }) }); setDemo(true); setUser(null); setVerificationRequired(false); setBusiness(demoBusiness); setBusinesses([]); setOutletMenuOpen(false); setAddOutletOpen(false); setOrders(makeDemoOrders()); setItems(demoMenu); setPage("home"); setToast(message); } catch (err) { setToast(err instanceof Error ? err.message : "Could not sign out."); } }
   function signOut() { return endSession("logout", "Signed out."); }
   function signOutEverywhere() { return endSession("logout-all", "Signed out of all devices."); }
   async function resendVerification() {
@@ -710,6 +701,26 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
       setToast(error instanceof Error ? error.message : "Could not refresh settlements.");
       revalidateOrders();
     } finally { setSettlementBusy(false); }
+  }
+  async function confirmPayment(attempt: PaymentAttempt) {
+    if (demo || paymentConfirmBusy) return;
+    if (!window.confirm(`Confirm ${money(attempt.amountPaise)} as received for order #${attempt.orderNumber}? This records money as collected; it does not call a payment gateway.`)) return;
+    const previous = paymentInbox;
+    setPaymentConfirmBusy(attempt.id);
+    setPaymentInbox((current) => current ? {
+      ...current,
+      attempts: current.attempts.map((row) => row.id === attempt.id ? { ...row, status: "paid", failureCode: "", failureMessage: "" } : row),
+      counts: { ...current.counts, [attempt.status]: Math.max(0, current.counts[attempt.status] - 1), paid: current.counts.paid + 1 },
+    } : current);
+    try {
+      await api(`/api/merchant/payments/${attempt.id}/confirm`, { method: "POST", body: JSON.stringify({ note: "Confirmed in Merchant" }) });
+      setToast("Payment confirmed.");
+      revalidateOrders();
+      setDataEpoch((n) => n + 1);
+    } catch (error) {
+      setPaymentInbox(previous);
+      setToast(error instanceof Error ? error.message : "Could not confirm this payment.");
+    } finally { setPaymentConfirmBusy(""); }
   }
   async function submitFeedbackReply(order: Order, response: string) {
     if (!response.trim() || feedbackBusy === order.id) return;
@@ -828,8 +839,10 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
     applyQuery(buildOrderQuery(next, nextFilter, nextPage, debouncedSearch, from, to));
     setPage(next);
     if (next === "orders") { setOrderPage(1); setOrderFilter(nextFilter); }
-    // Menu and offers stay in state across tab switches; link changes already
-    // bump dataEpoch, so re-entering a tab needs no extra request.
+    // Menu and offers are paired-aware reads that can be stale after an outage or
+    // a link change. Revalidate in the background on tab entry while keeping the
+    // last rendered data on screen, so the page never flashes empty.
+    if (next === "menu" || next === "offers") setCatalogEpoch((n) => n + 1);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
   function toggleOutletMenu() {
@@ -838,15 +851,18 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
     else setProfileOpen(true);
   }
   const storeSwitch = <button className={`switch ${business?.isOpen ? "on" : ""}`} role="switch" aria-checked={!!business?.isOpen} aria-label="Store open for orders" disabled={!business || busyStore} onClick={toggleStore}><span /></button>;
+  const overflowActive = visibleOverflowNav.some((item) => item.id === page);
+  const overflowButton = <button className={`nav-item nav-overflow header-tab ${overflowActive ? "active" : ""}`} aria-expanded={overflowOpen} onClick={() => setOverflowOpen(!overflowOpen)}><LayoutGrid size={19} strokeWidth={1.8} /><span>{vendor ? "Settings" : "More"}</span><ChevronDown className={`nav-chevron ${overflowOpen ? "open" : ""}`} size={14} /></button>;
+  const overflowItems = <>{visibleOverflowNav.map(({ id, label, icon: Icon }) => <button key={id} className={`nav-subitem ${page === id ? "active" : ""}`} onClick={() => { setOverflowOpen(false); navigate(id); }}><Icon size={16} /><span>{vendor && id === "more" ? "Business settings" : label}</span></button>)}<button className="nav-subitem" onClick={() => { setOverflowOpen(false); setHelpOpen(true); }}><Headphones size={16} /><span>Help &amp; support</span></button></>;
   const outletMenu = outletMenuOpen && !demo && businesses.length > 1 ? <><button className="outlet-menu-backdrop" aria-label="Close outlet menu" onClick={() => setOutletMenuOpen(false)} /><div className="outlet-menu" role="menu"><div className="outlet-menu-head">Your outlets</div>{businesses.map((option) => <button key={option.id} role="menuitem" className={`outlet-menu-item ${option.id === business?.id ? "active" : ""}`} disabled={switchingOutlet} onClick={() => void switchOutlet(option.id)}><span className="store-avatar small-avatar">{initials(option.name)}</span><span className="outlet-menu-text"><strong>{option.name || "Unnamed outlet"}</strong><small>{option.linked ? "Marketplace connected" : "Not connected"}</small></span>{option.id === business?.id && <Check size={16} />}</button>)}{role === "owner" && <button className="outlet-menu-add" onClick={() => { setOutletMenuOpen(false); setAddOutletOpen(true); }}><Plus size={15} /> Add outlet</button>}<div className="outlet-menu-divider" /><button className="outlet-menu-account" onClick={() => { setOutletMenuOpen(false); setProfileOpen(true); }}>Account &amp; settings</button></div></> : null;
 
   return <div className="app-shell">
-    <aside className="sidebar"><div className="brand"><span className="brand-mark"><UtensilsCrossed size={20} strokeWidth={2.4} /></span><div><strong>savour<span>.</span></strong><small>PARTNER</small></div></div>
-      <div className="sidebar-caption">WORKSPACE</div><nav className="side-nav" aria-label="Main navigation">{visibleNav.map(({ id, label, icon: Icon }) => <button key={id} className={`nav-item ${page === id ? "active" : ""}`} onClick={() => navigate(id)}><Icon size={19} strokeWidth={page === id ? 2.2 : 1.8} /><span>{label}</span>{id === "orders" && stats.counts.new > 0 && <em>{String(stats.counts.new).padStart(2, "0")}</em>}</button>)}</nav>
-      <div className="sidebar-spacer" /><div className="sidebar-help"><div className="help-icon"><Headphones size={19} /></div><strong>Here when you need us</strong><p>Questions about your workspace?</p><button onClick={() => setHelpOpen(true)}>Visit help centre <ArrowRight size={14} /></button></div>
-      <div className="sidebar-bottom"><div className="store-avatar">{initials(name)}</div><div className="store-identity"><strong>{name}</strong><span>{vendor ? "Street vendor" : "Restaurant partner"}</span></div><button className="icon-button small" aria-label="Account options" onClick={() => demo ? setAccountOpen(true) : vendor ? setProfileOpen(true) : navigate("more")}><MoreHorizontal size={19} /></button></div>
-    </aside>
-    <main className="main-area"><header className="topbar"><div className="breadcrumb"><span>Workspace</span><ChevronRight size={15} /><strong>{navItems.find((n) => n.id === page)?.label}</strong></div><div className="topbar-right"><div className="top-search"><Search size={17} /><input aria-label="Search order number" placeholder="Search orders..." value={search} onChange={(e) => { setSearch(e.target.value); setPage("orders"); setOrderFilter("all"); }} /></div><button className="top-notification" aria-label="Notification settings" onClick={() => setNotificationsOpen(true)}><Bell size={19} /><span /></button><div className="top-divider" /><div className="outlet-switcher"><button className="top-store" aria-expanded={outletMenuOpen} onClick={toggleOutletMenu}><div className="store-avatar small-avatar">{initials(name)}</div><div><strong>{name}</strong><span>{demo ? "Sample workspace" : user?.email}</span></div><ChevronDown size={15} /></button>{outletMenu}</div></div></header>
+    <main className="main-area"><header className="topbar app-header">
+      <div className="brand header-brand"><span className="brand-mark"><UtensilsCrossed size={20} strokeWidth={2.4} /></span><div><strong>savour<span>.</span></strong><small>PARTNER</small></div></div>
+      <nav className="header-nav" aria-label="Main navigation">{visiblePrimaryNav.map(({ id, label, icon: Icon }) => <button key={id} className={`nav-item header-tab ${page === id ? "active" : ""}`} onClick={() => navigate(id)}><Icon size={17} strokeWidth={page === id ? 2.2 : 1.8} /><span>{label}</span>{id === "orders" && stats.counts.new > 0 && <em>{String(stats.counts.new).padStart(2, "0")}</em>}</button>)}<div className="header-overflow-wrap">{overflowButton}{overflowOpen && <div className="header-overflow" role="group" aria-label={vendor ? "Settings" : "More"}>{overflowItems}</div>}</div></nav>
+      <div className="topbar-right"><div className="top-search"><Search size={17} /><input aria-label="Search order number" placeholder="Search orders..." value={search} onChange={(e) => { setSearch(e.target.value); setPage("orders"); setOrderFilter("all"); }} /></div><button className="top-notification" aria-label="Notification settings" onClick={() => setNotificationsOpen(true)}><Bell size={19} /><span /></button><div className="top-divider" /><div className="outlet-switcher"><button className="top-store" aria-expanded={outletMenuOpen} onClick={toggleOutletMenu}><div className="store-avatar small-avatar">{initials(name)}</div><div><strong>{name}</strong><span>{demo ? "Sample workspace" : user?.email}</span></div><ChevronDown size={15} /></button>{outletMenu}</div><button className="icon-button small header-account" aria-label="Account options" onClick={() => demo ? setAccountOpen(true) : vendor ? setProfileOpen(true) : navigate("more")}><MoreHorizontal size={19} /></button></div>
+      {overflowOpen && <button className="header-overflow-backdrop" aria-label="Close navigation menu" onClick={() => setOverflowOpen(false)} />}
+    </header>
       <div className="mobile-topbar"><div className="mobile-brand"><span className="brand-mark"><UtensilsCrossed size={18} /></span><strong>savour<span>.</span></strong><small>PARTNER</small></div><div className="mobile-top-actions"><button className="icon-button" aria-label="Notifications" onClick={() => setNotificationsOpen(true)}><Bell size={20} /></button><div className="outlet-switcher"><button className="store-avatar small-avatar avatar-button" aria-label={`Switch outlet, current: ${name}`} aria-expanded={outletMenuOpen} onClick={toggleOutletMenu}><Store size={15} /></button>{outletMenu}</div><button className="store-avatar small-avatar avatar-button" aria-label="Account" onClick={() => demo ? setAccountOpen(true) : setProfileOpen(true)}>{initials(name)}</button></div></div>
       {!online && <div className="connection-banner"><WifiOff size={16} /> You’re offline. New orders and changes won’t sync until you reconnect.</div>}
       {online && !demo && linkInvalid && <div className="connection-banner reconnect-banner"><Link2 size={16} /><div><strong>Marketplace connection needs attention.</strong><span>Orders and menu won’t sync until you reconnect. Open Business settings → Marketplace connection and generate a fresh pairing code.</span></div><button onClick={() => navigate("more")}>Open settings</button></div>}
@@ -913,10 +929,10 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
           <div className="staff-list panel">{staff.length ? staff.map((member) => <div className="staff-row" key={member.id}><div className="staff-identity"><div className="staff-avatar">{initials(member.email)}</div><div><strong>{member.email}</strong><span>Added {timeAgo(member.createdAt)}</span></div></div><select aria-label={`Role for ${member.email}`} value={member.role} onChange={(event) => void changeStaffRole(member, event.target.value as StaffRole)} disabled={!!staffBusy}>{STAFF_ROLES.map((value) => <option value={value} key={value}>{ROLE_LABELS[value]}</option>)}</select><button className="icon-button small" aria-label={`Remove ${member.email}`} disabled={!!staffBusy} onClick={() => void removeStaff(member)}><Trash2 size={15} /></button></div>) : <Empty icon={<Users size={25} />} title="No staff yet" text="Add a teammate to share the workload." />}</div>
           <div className="staff-guide"><div className="staff-guide-head"><ShieldCheck size={17} /><strong>What each role can do</strong></div><div className="staff-guide-grid">{(["owner", ...STAFF_ROLES] as AppRole[]).map((value) => <div className="staff-guide-card" key={value}><strong>{ROLE_LABELS[value]}</strong><span>{ROLE_DESCRIPTIONS[value]}</span></div>)}</div></div>
         </>}
-        {page === "earnings" && <><div className="page-intro"><div><div className="eyebrow">THE BIGGER PICTURE <span>✳</span></div><h1>Earnings</h1><p>A clear view of your marketplace sales and settlements.</p></div><div className="earnings-actions">{!demo && can(role, "settlements.read") && <button className="btn btn-outline" disabled={settlementBusy} onClick={() => void refreshSettlements()}>{settlementBusy ? "Refreshing…" : "Refresh settlements"}</button>}{!demo && can(role, "settlements.read") && <a className="btn btn-outline" href="/api/merchant/exports?type=settlements" download><Download size={16} /> Settlements CSV</a>}<div className="date-chip"><Clock3 size={16} /> {earningsTab === "overview" ? "Today" : revenueLabel}</div></div></div>
-        <div className="earnings-tabs" role="tablist" aria-label="Earnings views"><button role="tab" aria-selected={earningsTab === "overview"} className={earningsTab === "overview" ? "selected" : ""} onClick={() => setEarningsTab("overview")}>Overview</button><button role="tab" aria-selected={earningsTab === "revenue"} className={earningsTab === "revenue" ? "selected" : ""} onClick={() => setEarningsTab("revenue")}>Revenue</button><button role="tab" aria-selected={earningsTab === "items"} className={earningsTab === "items" ? "selected" : ""} onClick={() => { setEarningsTab("items"); if (!demo && business?.id) setItemReportBusy(true); }}>Items</button><button role="tab" aria-selected={earningsTab === "insights"} className={earningsTab === "insights" ? "selected" : ""} onClick={() => { setEarningsTab("insights"); if (!demo && business?.id) setAnalyticsBusy(true); }}>Insights</button></div>
+        {page === "earnings" && <><div className="page-intro"><div><div className="eyebrow">THE BIGGER PICTURE <span>✳</span></div><h1>Earnings</h1><p>A clear view of your marketplace sales and settlements.</p></div><div className="earnings-actions">{!demo && can(role, "settlements.read") && <button className="btn btn-outline" disabled={settlementBusy} onClick={() => void refreshSettlements()}>{settlementBusy ? "Refreshing…" : "Refresh settlements"}</button>}{!demo && can(role, "settlements.read") && <a className="btn btn-outline" href="/api/merchant/exports?type=settlements" download><Download size={16} /> Settlements CSV</a>}<div className="date-chip"><Clock3 size={16} /> {earningsTab === "overview" || earningsTab === "breakdown" ? "Today" : ["revenue", "items", "insights"].includes(earningsTab) ? revenueLabel : "All time"}</div></div></div>
+        <div className="earnings-tabs" role="tablist" aria-label="Earnings views"><button role="tab" aria-selected={earningsTab === "overview"} className={earningsTab === "overview" ? "selected" : ""} onClick={() => setEarningsTab("overview")}>Overview</button><button role="tab" aria-selected={earningsTab === "revenue"} className={earningsTab === "revenue" ? "selected" : ""} onClick={() => setEarningsTab("revenue")}>Revenue</button><button role="tab" aria-selected={earningsTab === "items"} className={earningsTab === "items" ? "selected" : ""} onClick={() => { setEarningsTab("items"); if (!demo && business?.id) setItemReportBusy(true); }}>Items</button>{!demo && can(role, "payments.read") && <button role="tab" aria-selected={earningsTab === "payments"} className={earningsTab === "payments" ? "selected" : ""} onClick={() => { setEarningsTab("payments"); if (!demo && business?.id) setPaymentBusy(true); }}>Payments</button>}<button role="tab" aria-selected={earningsTab === "insights"} className={earningsTab === "insights" ? "selected" : ""} onClick={() => { setEarningsTab("insights"); if (!demo && business?.id) setAnalyticsBusy(true); }}>Insights</button>{!demo && can(role, "settlements.read") && <button role="tab" aria-selected={earningsTab === "breakdown"} className={earningsTab === "breakdown" ? "selected" : ""} onClick={() => setEarningsTab("breakdown")}>Breakdown</button>}{!demo && can(role, "payments.read") && <button role="tab" aria-selected={earningsTab === "refunds"} className={earningsTab === "refunds" ? "selected" : ""} onClick={() => setEarningsTab("refunds")}>Refunds</button>}{!demo && can(role, "settlements.read") && <button role="tab" aria-selected={earningsTab === "statements"} className={earningsTab === "statements" ? "selected" : ""} onClick={() => setEarningsTab("statements")}>Statements</button>}{!demo && can(role, "settlements.read") && <button role="tab" aria-selected={earningsTab === "reconciliation"} className={earningsTab === "reconciliation" ? "selected" : ""} onClick={() => setEarningsTab("reconciliation")}>Reconciliation</button>}{!demo && can(role, "settlements.read") && <button role="tab" aria-selected={earningsTab === "payouts"} className={earningsTab === "payouts" ? "selected" : ""} onClick={() => setEarningsTab("payouts")}>Payouts</button>}{!demo && can(role, "settlements.read") && <button role="tab" aria-selected={earningsTab === "fees"} className={earningsTab === "fees" ? "selected" : ""} onClick={() => setEarningsTab("fees")}>Fees</button>}</div>
         {(earningsTab === "revenue" || earningsTab === "items" || earningsTab === "insights") && <div className="revenue-toolbar"><div className="revenue-presets">{REVENUE_PRESETS.map((preset) => <button key={preset.id} className={revenuePreset === preset.id ? "selected" : ""} onClick={() => chooseRevenuePreset(preset.id)}>{preset.label}</button>)}<button className={revenuePreset === "custom" ? "selected" : ""} onClick={() => chooseRevenuePreset("custom")}>Custom</button></div><div className="revenue-custom" suppressHydrationWarning><CalendarDays size={16} /><label>From <input aria-label="Report from date" type="date" value={revenueRange.from ?? ""} max={revenueRange.to ?? undefined} onChange={(event) => changeRevenueDate("from", event.target.value)} /></label><span>to</span><label>To <input aria-label="Report to date" type="date" value={revenueRange.to ?? ""} min={revenueRange.from ?? undefined} onChange={(event) => changeRevenueDate("to", event.target.value)} /></label></div>{earningsTab === "revenue" && !demo && can(role, "settlements.read") && <a className="btn btn-outline" href={revenueExportHref} download><Download size={16} /> Export CSV</a>}{(revenueBusy || itemReportBusy || analyticsBusy) && !demo && <span className="revenue-updating">Updating…</span>}</div>}
-        {earningsTab === "overview" && <>{!demo && can(role, "settlements.read") && ["error", "throttled", "truncated"].includes(stats.settlementSync.status) && <div className="approval-banner"><Info size={18} /><div><strong>{stats.settlementSync.status === "truncated" ? "Settlement history is capped" : stats.settlementSync.status === "throttled" ? "Settlements were refreshed recently" : "Settlements could not be refreshed"}</strong><span>{stats.settlementSync.message ?? "Showing the last saved records."}</span></div>{stats.settlementSync.canRetry && <button disabled={settlementBusy} onClick={() => void refreshSettlements()}>{settlementBusy ? "Retrying…" : "Retry"}</button>}</div>}<div className="earnings-grid"><Metric icon={<CircleDollarSign size={21} />} tone="red" title="Gross sales today" value={money(stats.todaySales)} detail="Completed order value, before fees" /><Metric icon={<CheckCircle2 size={21} />} tone="green" title="Completed today" value={String(stats.completedToday)} detail="Orders marked completed" /><Metric icon={<CreditCard size={21} />} tone="blue" title="Net deposited" value={paidSettlements.length ? money(settlementTotals.net) : "—"} detail={paidSettlements.length ? "Confirmed in Marketplace settlements" : "No confirmed deposits yet"} /><Metric icon={<ArrowDownRight size={21} />} tone="amber" title="Settlements" value={String(paidSettlements.length).padStart(2, "0")} detail={stats.settlementSync.status === "error" ? "Showing last saved records" : stats.settlementSync.lastSyncedAt ? `Synced ${stats.settlementSync.lastSyncedAt.slice(11, 16)} UTC` : "Awaiting Marketplace payouts"} /></div><div className="earnings-columns"><section className="panel earnings-panel"><div className="section-heading"><div><h3>How earnings work</h3><p>Sales and settlement are not the same thing.</p></div><span className="settings-icon"><CircleDollarSign size={20} /></span></div><div className="earnings-line"><span>Gross completed order value today</span><strong>{money(stats.todaySales)}</strong></div><div className="earnings-line"><span>Settled gross</span><strong>{paidSettlements.length ? money(settlementTotals.gross) : "—"}</strong></div><div className="earnings-line"><span>Marketplace fees & adjustments</span><strong>{paidSettlements.length ? money(settlementTotals.fees + settlementTotals.adjustments) : "—"}</strong></div><div className="earnings-line"><span>Refunds</span><strong>{paidSettlements.length ? money(settlementTotals.refunds) : "—"}</strong></div><div className="earnings-line total"><span>Net deposited</span><strong>{paidSettlements.length ? money(settlementTotals.net) : "Not available"}</strong></div><div className="info-box">{stats.settlementSync.status === "error" ? stats.settlementSync.message : paidSettlements.length ? "Amounts come from authoritative Marketplace settlement records, not estimates." : demo ? "Sample payouts are not included. Connect a Marketplace listing to see real settlements." : "Marketplace will show confirmed deposits here after the first completed order is paid out."}</div></section><section className="panel earnings-panel"><div className="section-heading"><div><h3>Settlement history</h3><p>Net records mirrored from Marketplace payouts.</p></div></div>{stats.settlements.length ? stats.settlements.map((settlement) => <div className="earnings-line" key={settlement.id}><span>#{settlement.orderNumber ?? settlement.marketplaceOrderId} · {settlement.status} · {new Date(settlement.paidAt ?? settlement.createdAt).toISOString().slice(0, 10)}</span><strong>{money(settlement.netAmount)}</strong></div>) : <div className="settlement-empty"><CreditCard size={24} /><strong>No settlement records yet</strong><span>{demo ? "Connect a Marketplace listing to see real payouts." : "Confirmed deposits will appear after Marketplace settles an order."}</span></div>}</section></div></>}
+        {earningsTab === "overview" && <>{!demo && can(role, "settlements.read") && ["error", "throttled", "truncated"].includes(stats.settlementSync.status) && <div className="approval-banner"><Info size={18} /><div><strong>{stats.settlementSync.status === "truncated" ? "Settlement history is capped" : stats.settlementSync.status === "throttled" ? "Settlements were refreshed recently" : "Settlements could not be refreshed"}</strong><span>{stats.settlementSync.message ?? "Showing the last saved records."}</span></div>{stats.settlementSync.canRetry && <button disabled={settlementBusy} onClick={() => void refreshSettlements()}>{settlementBusy ? "Retrying…" : "Retry"}</button>}</div>}<div className="earnings-grid"><Metric icon={<CircleDollarSign size={21} />} tone="red" title="Gross sales today" value={money(stats.todaySales)} detail="Completed order value, before fees" /><Metric icon={<CheckCircle2 size={21} />} tone="green" title="Completed today" value={String(stats.completedToday)} detail="Orders marked completed" /><Metric icon={<CreditCard size={21} />} tone="blue" title="Net deposited" value={settlementTotals.count > 0 ? money(settlementTotals.net) : "—"} detail={settlementTotals.count > 0 ? "Confirmed in Marketplace settlements" : "No confirmed deposits yet"} /><Metric icon={<ArrowDownRight size={21} />} tone="amber" title="Settlements" value={String(settlementTotals.count).padStart(2, "0")} detail={stats.settlementSync.status === "error" ? "Showing last saved records" : stats.settlementSync.lastSyncedAt ? `Synced ${stats.settlementSync.lastSyncedAt.slice(11, 16)} UTC` : "Awaiting Marketplace payouts"} /></div><div className="earnings-columns"><section className="panel earnings-panel"><div className="section-heading"><div><h3>How earnings work</h3><p>Sales and settlement are not the same thing.</p></div><span className="settings-icon"><CircleDollarSign size={20} /></span></div><div className="earnings-line"><span>Gross completed order value today</span><strong>{money(stats.todaySales)}</strong></div><div className="earnings-line"><span>Settled gross</span><strong>{settlementTotals.count > 0 ? money(settlementTotals.gross) : "—"}</strong></div><div className="earnings-line"><span>Marketplace fees & adjustments</span><strong>{settlementTotals.count > 0 ? money(settlementTotals.fees + settlementTotals.adjustments) : "—"}</strong></div><div className="earnings-line"><span>Refunds</span><strong>{settlementTotals.count > 0 ? money(settlementTotals.refunds) : "—"}</strong></div><div className="earnings-line total"><span>Net deposited</span><strong>{settlementTotals.count > 0 ? money(settlementTotals.net) : "Not available"}</strong></div><div className="info-box">{stats.settlementSync.status === "error" ? stats.settlementSync.message : settlementTotals.count > 0 ? "Amounts come from authoritative Marketplace settlement records, not estimates." : demo ? "Sample payouts are not included. Connect a Marketplace listing to see real settlements." : "Marketplace will show confirmed deposits here after the first completed order is paid out."}</div></section><section className="panel earnings-panel"><div className="section-heading"><div><h3>Settlement history</h3><p>Net records mirrored from Marketplace payouts.</p></div></div>{stats.settlements.length ? stats.settlements.map((settlement) => <div className="earnings-line" key={settlement.id}><span>#{settlement.orderNumber ?? settlement.marketplaceOrderId} · {settlement.status} · {new Date(settlement.paidAt ?? settlement.createdAt).toISOString().slice(0, 10)}</span><strong>{money(settlement.netAmount)}</strong></div>) : <div className="settlement-empty"><CreditCard size={24} /><strong>No settlement records yet</strong><span>{demo ? "Connect a Marketplace listing to see real payouts." : "Confirmed deposits will appear after Marketplace settles an order."}</span></div>}</section></div></>}
         {earningsTab === "revenue" && <>
           {revenueError && <div className="approval-banner"><Info size={18} /> {revenueError}</div>}
           <div className="panel revenue-hero"><div className="revenue-primary"><span>Total revenue</span><strong>{revenueForView ? money(revenueForView.grossSales) : "—"}</strong><small suppressHydrationWarning>{revenueLabel} · gross completed sales, before fees</small></div><div className="revenue-divider" /><div className="revenue-secondary"><span>Net paid</span><strong>{revenueForView ? money(revenueForView.netPaid) : "—"}</strong><small>Confirmed Marketplace deposits in the same period</small></div></div>
@@ -930,6 +946,34 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
             {itemReportForView && itemReportForView.items.length ? <div className="item-report-table"><div className="item-report-head"><span>Item</span><span>Orders</span><span>Units</span><span>Sales</span></div>{itemReportForView.items.map((row) => <div className="item-report-row" key={row.itemId ?? row.name}><span><strong>{row.name}</strong></span><span>{row.orders}</span><span>{row.unitsSold}</span><span><strong>{money(row.grossSales)}</strong></span></div>)}</div> : <Empty icon={<UtensilsCrossed size={25} />} title="No item sales yet" text="Completed orders with item lines will appear here for the selected range." />}
           </div>
           <div className="info-box">{demo ? "Demo item sales are calculated from the items in your completed sample orders." : "Item sales are calculated by Marketplace from completed order snapshots, including modifier charges. Renamed or removed menu items still show the name customers ordered."}</div>
+        </>}
+        {earningsTab === "payments" && <>
+          {paymentError && <div className="approval-banner"><Info size={18} /> {paymentError}</div>}
+          {demo ? <div className="info-box">Online payment attempts will appear here once you leave demo mode.</div>
+            : paymentInbox && !paymentInbox.available ? <div className="info-box">{paymentInbox.notice}</div>
+              : <>
+                <div className="earnings-grid revenue-stats">
+                  <Metric icon={<Clock3 size={21} />} tone="amber" title="Awaiting payment" value={String(paymentInbox?.counts.created ?? 0)} detail="Authorisation received, not captured" />
+                  <Metric icon={<CreditCard size={21} />} tone="blue" title="Authorised" value={String(paymentInbox?.counts.authorized ?? 0)} detail="Ready to be confirmed" />
+                  <Metric icon={<X size={21} />} tone="red" title="Failed" value={String(paymentInbox?.counts.failed ?? 0)} detail="Declined or expired attempts" />
+                  <Metric icon={<CheckCircle2 size={21} />} tone="green" title="Paid" value={String(paymentInbox?.counts.paid ?? 0)} detail="Confirmed attempts" />
+                </div>
+                <div className="panel item-report"><div className="section-heading"><div><h3>Payment attempts</h3><p>Local online payments and confirmations for this outlet.</p></div><div className="finance-actions">{!demo && paymentInbox?.available && can(role, "payments.write") && <button className="btn btn-primary" onClick={() => setCheckoutOrderId("")}><CreditCard size={15} /> Start online payment</button>}<span className="settings-icon"><CreditCard size={20} /></span></div></div>
+                  {paymentInbox?.attempts.length ? <div className="item-report-table">
+                    <div className="item-report-head"><span>Order</span><span>Reference</span><span>Status</span><span>Amount</span><span /></div>
+                    {paymentInbox.attempts.map((attempt) => <div className="item-report-row" key={attempt.id}>
+                      <span><strong>#{attempt.orderNumber}</strong><small>{attempt.customerName}</small></span>
+                      <span>{attempt.providerReference || "—"}</span>
+                      <span>{PAYMENT_STATE_LABEL[attempt.status]}{attempt.failureMessage && <small title={attempt.failureCode}>{attempt.failureMessage}</small>}</span>
+                      <span><strong>{money(attempt.amountPaise)}</strong></span>
+                      <span className="finance-actions">{attempt.status === "failed" && can(role, "payments.write") && <button className="btn btn-outline" onClick={() => setCheckoutOrderId(attempt.orderId)}>Retry online</button>}{["created", "authorized", "failed"].includes(attempt.status) && can(role, "payments.write") && <button className="btn btn-outline" disabled={!!paymentConfirmBusy} onClick={() => void confirmPayment(attempt)}>{paymentConfirmBusy === attempt.id ? "Confirming…" : "Confirm"}</button>}</span>
+                    </div>)}
+                  </div> : <Empty icon={<CreditCard size={25} />} title="No payment attempts yet" text="Signed payment events and manual confirmations will appear here." />}
+                  {paymentInbox?.truncated && <div className="info-box">Showing the latest 50 attempts.</div>}
+                </div>
+                <div className="info-box">This ledger covers unpaired outlets only. Connected outlets are managed by Savour Marketplace; use the settlement feed for confirmed money.</div>
+              </>}
+          {paymentBusy && <span className="revenue-updating">Updating…</span>}
         </>}
         {earningsTab === "insights" && <>
           {analyticsError && <div className="approval-banner"><Info size={18} /> {analyticsError}</div>}
@@ -957,6 +1001,7 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
           </> : analyticsError ? null : <div className="info-box">Loading analytics…</div>}
           <div className="info-box">{demo ? "Demo analytics are calculated from the sample orders in this workspace." : "Totals follow the Revenue tab (completion date). Tables group orders by placement date in India Standard Time."}</div>
         </>}
+        <FinanceTabs active={earningsTab} role={role} demo={demo} businessId={business?.id} epoch={dataEpoch} onChanged={() => { setDataEpoch((n) => n + 1); revalidateOrders(); }} notify={setToast} />
       </>}
         {page === "service" && <>
           <div className="page-intro"><div><div className="eyebrow">WHERE &amp; WHEN YOU SERVE <span>✳</span></div><h1>Service area &amp; hours</h1><p>Set your map pin, delivery area, weekly hours and time-slot menus in one place.</p></div><button className="btn btn-outline" onClick={() => navigate("more")}>Business settings</button></div>
@@ -967,7 +1012,8 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
         <footer className="page-footer"><span>Made for the people behind the plate <span>♥</span></span><span>© Savour Partner</span></footer>
       </div>
     </main>
-    <nav className="bottom-nav" aria-label="Mobile navigation">{visibleNav.map(({ id, label, icon: Icon }) => <button key={id} className={page === id ? "active" : ""} onClick={() => navigate(id)}><span><Icon size={21} strokeWidth={page === id ? 2.3 : 1.8} />{id === "orders" && stats.counts.new > 0 && <i />}</span><small>{label}</small></button>)}</nav>
+    <nav className="bottom-nav" aria-label="Mobile navigation">{visiblePrimaryNav.map(({ id, label, icon: Icon }) => <button key={id} className={page === id ? "active" : ""} onClick={() => navigate(id)}><span><Icon size={21} strokeWidth={page === id ? 2.3 : 1.8} />{id === "orders" && stats.counts.new > 0 && <i />}</span><small>{label}</small></button>)}<button className={overflowActive ? "active" : ""} aria-expanded={overflowOpen} onClick={() => setOverflowOpen(!overflowOpen)}><span><LayoutGrid size={21} strokeWidth={1.8} /></span><small>{vendor ? "Settings" : "More"}</small></button></nav>
+    {overflowOpen && <><button className="mobile-overflow-backdrop" aria-label="Close navigation menu" onClick={() => setOverflowOpen(false)} /><div className="mobile-overflow-sheet" role="group" aria-label={vendor ? "Settings" : "More"}><div className="mobile-overflow-title">{vendor ? "Settings" : "More"}</div><div className="mobile-overflow-grid">{overflowItems}</div></div></>}
     {toast && <div className="toast" role="status"><Info size={17} /> {toast}<button onClick={() => setToast("")} aria-label="Dismiss"><X size={15} /></button></div>}
     {profileOpen && <Modal title="Your account" subtitle={user?.email} onClose={() => setProfileOpen(false)}><div className="form-stack"><div className="info-box"><strong>{name}</strong><br />{vendor ? "Street vendor" : "Restaurant partner"} · {business?.approvalStatus === "approved" ? "Approved" : "Listing not live"}</div><button className="btn btn-outline full large" onClick={() => { setProfileOpen(false); navigate("more"); }}><Settings2 size={16} /> Business details & hours</button>{user && !user.emailVerified && <button className="btn btn-outline full large" onClick={() => { setProfileOpen(false); void resendVerification(); }}><Mail size={16} /> Resend verification email</button>}<button className="btn btn-outline full large" onClick={() => { setProfileOpen(false); setPasswordOpen(true); }}><KeyRound size={16} /> Change password</button><button className="btn btn-outline full large" onClick={() => { setProfileOpen(false); void signOut(); }}><LogOut size={16} /> Sign out</button><button className="btn btn-outline full large" onClick={() => { setProfileOpen(false); void signOutEverywhere(); }}><LogOut size={16} /> Sign out of all devices</button></div></Modal>}
     {accountOpen && <AccountModal onClose={() => setAccountOpen(false)} onSuccess={activate} />}
@@ -978,6 +1024,7 @@ export default function MerchantApp({ initialAuth, initialWorkspace }: { initial
     {modifierGroupDialog && <ModifierGroupModal group={modifierGroupDialog.group} onClose={() => setModifierGroupDialog(null)} onSave={saveModifierGroup} />}
     {offerDialog && <OfferModal offer={offerDialog.offer} onClose={() => setOfferDialog(null)} onSave={saveOffer} />}
     {decision && <DecisionModal order={decision.order} action={decision.action} onClose={() => setDecision(null)} onConfirm={confirmOrder} />}
+    {checkoutOrderId !== null && <PaymentCheckoutModal initialOrderId={checkoutOrderId} orders={orders} onClose={() => setCheckoutOrderId(null)} onChanged={() => { revalidateOrders(); setDataEpoch((n) => n + 1); }} notify={setToast} />}
     {fulfilmentDialog && <FulfilmentModal order={fulfilmentDialog.order} fulfilment={fulfilmentDialog.fulfilment} onClose={() => setFulfilmentDialog(null)} onConfirm={(addressText) => changeFulfilment(fulfilmentDialog.order, fulfilmentDialog.fulfilment, addressText)} />}
     {details && <Modal title={`Order #${details.orderNumber}`} subtitle={`${statusLabel[details.status]} · ${timeAgo(details.createdAt)}`} onClose={() => setDetails(null)}><div className="detail-meta"><span>{details.fulfilment === "delivery" ? <Bike size={17} /> : <Store size={17} />}{details.fulfilment === "delivery" ? "Delivery" : "Pickup"}</span><span><CreditCard size={17} />{details.paymentStatus === "paid" ? "Paid" : "Payment pending"} · {details.paymentMethod}</span></div>{details.courierStatus && <div className="info-box"><strong>Courier update:</strong> {details.courierStatus.replaceAll("_", " ")}{details.courierTrackingId ? ` · tracking ${details.courierTrackingId}` : ""}</div>}{details.paymentReference && <div className="info-box"><strong>Payment reference:</strong> {details.paymentReference}</div>}<div className="detail-items">{details.items.map((item) => <div key={item.id}><span><b>{item.quantity} ×</b> {item.name}{item.modifiers?.length ? <small className="block muted">{item.modifiers.map((modifier) => `${modifier.quantity > 1 ? `${modifier.quantity} × ` : ""}${modifier.name}`).join(", ")}</small> : null}</span><strong>{money(item.lineTotal ?? item.quantity * item.unitPrice)}</strong></div>)}{details.discount > 0 && <div className="detail-discount"><span>Offer {details.offerCode ? `(${details.offerCode})` : "discount"}</span><strong>−{money(details.discount)}</strong></div>}<div className="detail-total"><span>Order total</span><strong>{money(details.total)}</strong></div></div>{details.deliveryAddress.trim() && <div className="info-box"><strong>{details.fulfilment === "delivery" ? "Delivery address:" : "Customer address:"}</strong> {details.deliveryAddress}</div>}{details.customerNote && <div className="info-box"><strong>Customer note:</strong> {details.customerNote}</div>}{details.prepMinutes && <p className="dialog-copy">Preparation time: {details.prepMinutes} minutes</p>}{details.rejectionReason && <p className="dialog-copy">Cancellation reason: {details.rejectionReason}</p>}{details.rating !== null && <div className="feedback-block"><div className="feedback-head"><strong>Customer review</strong><span className={`feedback-stars ${details.rating <= 2 ? "negative" : ""}`}>{"★".repeat(details.rating)}{"☆".repeat(5 - details.rating)}</span></div>{details.review ? <p className="feedback-review">“{details.review}”</p> : <p className="feedback-review muted">No written comment.</p>}<span className="feedback-date" suppressHydrationWarning>{details.feedbackAt ? `Submitted ${timeAgo(details.feedbackAt)}` : ""}</span>{details.merchantResponse ? <div className="feedback-reply-sent"><strong>Your reply</strong><p>{details.merchantResponse}</p></div> : <FeedbackReply order={details} busy={feedbackBusy === details.id} onSend={submitFeedbackReply} />}</div>}<button className="btn btn-outline full large" onClick={() => setDetails(null)}>Close details</button></Modal>}
     {notificationsOpen && <Modal title="Order notifications" subtitle="Choose how you’d like to hear about new orders." onClose={() => setNotificationsOpen(false)}><div className="notification-setting"><div><strong>Play a sound</strong><p>When a new order is detected in this workspace.</p></div><button className={`switch ${soundEnabled ? "on" : ""}`} role="switch" aria-checked={soundEnabled} onClick={() => { const next = !soundEnabled; setSoundEnabled(next); localStorage.setItem("savour-sound", next ? "on" : "off"); if (next) playAlert(); }}><span /></button></div><div className="notification-setting"><div><strong>Browser notifications</strong><p>Permission: {notificationPermission}. Availability depends on your browser.</p></div><button className="btn btn-outline" onClick={async () => { if (!("Notification" in window)) { setToast("Browser notifications aren’t supported here."); return; } const permission = await Notification.requestPermission(); setNotificationPermission(permission); }}>Enable</button></div><div className="info-box">This web workspace checks for new orders while open. Background or closed-app delivery isn’t guaranteed.</div></Modal>}

@@ -55,7 +55,7 @@ function ProductList({ title, rows, empty }: { title: string; rows: AnalyticsPro
 export function BiDashboard({ report }: { report: AdvancedAnalytics }) {
   const maxHour = Math.max(1, ...report.hourly.map((row) => row.grossSales));
   const bestSellers = report.products.slice(0, 5);
-  const slowMovers = report.products.length > 5 ? report.products.slice(-5).reverse() : [];
+  const slowMovers = report.slowMovers;
   const prepRows = report.products
     .filter((row) => row.avgPrepMinutes !== null && row.avgPrepMinutes > 0)
     .sort((a, b) => (b.avgPrepMinutes ?? 0) - (a.avgPrepMinutes ?? 0))
@@ -97,11 +97,11 @@ export function BiDashboard({ report }: { report: AdvancedAnalytics }) {
           ) : <p className="bi-empty-line">No hourly data in this range.</p>}
         </Panel>
 
-        <Panel title="Product movement" subtitle="Best sellers and slow movers by sales value" icon={<Package size={20} />}>
-          {report.products.length ? (
+        <Panel title="Product movement" subtitle="Best sellers by sales value ┬À slow movers by units sold" icon={<Package size={20} />}>
+          {report.products.length || report.slowMovers.length ? (
             <div className="bi-product-columns">
               <ProductList title="Best sellers" rows={bestSellers} empty="" />
-              <ProductList title="Slow movers" rows={slowMovers} empty="Fewer than six items sold in this range." />
+              <ProductList title="Slow movers" rows={slowMovers} empty="No active menu items to compare." />
             </div>
           ) : <p className="bi-empty-line">Completed order items will appear here.</p>}
         </Panel>
@@ -146,9 +146,9 @@ export function BiDashboard({ report }: { report: AdvancedAnalytics }) {
           </div>
         </Panel>
 
-        <Panel title="Profitability" subtitle="After discounts, commissions and refunds" icon={<Wallet size={20} />}>
+        <Panel title="Net proceeds after platform fees" subtitle="After discounts, commissions and refunds" icon={<Wallet size={20} />}>
           <div className="bi-profit-hero">
-            <span>Net after discounts &amp; fees</span>
+            <span>Net proceeds</span>
             <strong>{money(report.profitability.netAfterFees)}</strong>
           </div>
           <div className="bi-profit-grid">
@@ -160,7 +160,7 @@ export function BiDashboard({ report }: { report: AdvancedAnalytics }) {
             <div><span>Authoritative net paid</span><strong>{money(report.profitability.netPaid)}</strong></div>
           </div>
           <p className="bi-caption">
-            Discounts are already reflected in gross sales; commissions and refunds come from {report.profitability.source === "settlements" ? "settled payments" : report.profitability.source === "revenue" ? "Marketplace revenue" : "the selected range"}.
+            Discounts are already reflected in gross sales; commissions and refunds come from {report.profitability.source === "settlements" ? "settled payments" : report.profitability.source === "revenue" ? "Marketplace revenue" : "the selected range"}. This is not restaurant profit: food costs, staff wages, rent and other operating expenses are excluded.
           </p>
         </Panel>
       </div>

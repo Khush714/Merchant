@@ -31,6 +31,20 @@ for (const bad of [
 ]) assert.throws(() => parseProviderEvent("courier", bad), ProviderEventError);
 assert.throws(() => parseProviderEvent("unknown", event), ProviderEventError);
 
+// Legacy events stay valid; payment metadata is optional but validated when present.
+assert.equal(parseProviderEvent("payment", { ...event, eventId: "pay_legacy", type: "failed" }).amountPaise, null);
+const withAmount = parseProviderEvent("payment", {
+  ...event, eventId: "pay_amount", type: "paid", amountPaise: 49900,
+  failureCode: "CARD_DECLINED", failureMessage: " Bank declined ",
+});
+assert.equal(withAmount.amountPaise, 49900);
+assert.equal(withAmount.failureCode, "CARD_DECLINED");
+for (const bad of [
+  { ...event, eventId: "pay_bad_1", type: "paid", amountPaise: -1 },
+  { ...event, eventId: "pay_bad_2", type: "paid", amountPaise: "49900" },
+  { ...event, eventId: "pay_bad_3", type: "failed", failureMessage: "a".repeat(201) },
+]) assert.throws(() => parseProviderEvent("payment", bad), ProviderEventError);
+
 const raw = JSON.stringify(event);
 const timestamp = Math.floor(Date.now() / 1000);
 const header = signatureHeader(secret, raw, timestamp);

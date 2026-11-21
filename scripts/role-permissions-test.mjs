@@ -26,6 +26,15 @@ const ui = readFileSync(new URL("../src/components/merchant-app.tsx", import.met
 assert.match(ui, /can\(role, "menu\.availability"\)/);
 assert.match(ui, /can\(role, "menu\.write"\)/);
 
+// Payment attempts are read-only for managers; confirming money is owner-only.
+assert.equal(can("owner", "payments.read"), true);
+assert.equal(can("owner", "payments.write"), true);
+assert.equal(can("manager", "payments.read"), true);
+assert.equal(can("manager", "payments.write"), false);
+assert.equal(can("kitchen", "payments.read"), false);
+assert.equal(can("server", "payments.read"), false);
+assert.match(ui, /earningsTab === "payments"/);
+
 // The Compliance tab is read-visible to managers, while every write action stays owner-only.
 assert.match(ui, /id: "compliance", label: "Compliance", icon: ShieldCheck, permission: "compliance\.read"/);
 const complianceUi = readFileSync(new URL("../src/components/compliance.tsx", import.meta.url), "utf8");

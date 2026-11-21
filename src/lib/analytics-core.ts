@@ -57,6 +57,8 @@ export type AnalyticsSettlementTotals = {
 export type AdvancedAnalyticsOptions = {
   source?: "local" | "marketplace";
   settlements?: AnalyticsSettlementTotals | null;
+  /** Every active menu item name, so zero-sale products can appear in slow movers. */
+  productCatalog?: string[];
   previousRows?: AnalyticsOrderRow[];
   previousSummary?: RevenueSummary | null;
   previousLabel?: string | null;
@@ -68,6 +70,7 @@ export type AdvancedAnalyticsOptions = {
 const DAILY_LIMIT = 100;
 const OFFER_LIMIT = 50;
 const PRODUCT_LIMIT = 100;
+const SLOW_MOVER_LIMIT = 5;
 const HOURS = 24;
 const IST_OFFSET_MS = 5 * 3_600_000 + 30 * 60_000;
 
@@ -184,6 +187,14 @@ export function buildAdvancedAnalytics(
   const customers = new Map<string, number>();
   let ordersPlaced = 0, completed = 0, discountsGiven = 0, failedPayments = 0;
 
+  // Seed the full menu first so an item that never sold is still a real slow mover.
+  for (const rawName of options.productCatalog ?? []) {
+    const name = cleanName(rawName) || "Unnamed item";
+    if (!products.has(name)) {
+      products.set(name, { name, unitsSold: 0, grossSales: 0, orders: new Set<string>(), prepTotal: 0, prepCount: 0 });
+    }
+  }
+
   for (const [index, row] of rows.entries()) {
     const day = indiaDate(new Date(row.createdAt));
     const dayBucket = daily.get(day) ?? bucket();
@@ -284,16 +295,23 @@ export function buildAdvancedAnalytics(
     .sort(([a, av], [b, bv]) => bv.discountGiven - av.discountGiven || a.localeCompare(b))
     .slice(0, OFFER_LIMIT)
     .map(([code, value]) => ({ code, ...value }));
-  const productRows: AnalyticsProductRow[] = [...products.values()]
+  const allProductRows: AnalyticsProductRow[] = [...products.values()]
     .map((value) => ({
       name: value.name,
       unitsSold: value.unitsSold,
       grossSales: value.grossSales,
       orders: value.orders.size,
       avgPrepMinutes: value.prepCount ? Math.round(value.prepTotal / value.prepCount) : null,
-    }))
+    }));
+  const productRows = allProductRows
+    .filter((row) => row.unitsSold > 0)
     .sort((a, b) => b.grossSales - a.grossSales || a.name.localeCompare(b.name))
     .slice(0, PRODUCT_LIMIT);
+  // Slow movers are the fewest units sold across the whole menu, not the tail of
+  // the revenue-capped best-seller table. Zero-sale items rank first.
+  const slowMovers = [...allProductRows]
+    .sort((a, b) => a.unitsSold - b.unitsSold || a.grossSales - b.grossSales || a.name.localeCompare(b.name))
+    .slice(0, SLOW_MOVER_LIMIT);
   const cancellationRows: AnalyticsReasonRow[] = [...cancellations.entries()]
     .map(([reason, value]) => ({ reason, ...value }))
     .sort((a, b) => b.orders - a.orders || a.reason.localeCompare(b.reason));
@@ -346,6 +364,7 @@ export function buildAdvancedAnalytics(
     today,
     hourly,
     products: productRows,
+    slowMovers,
     cancellations: cancellationRows,
     repeat,
     delivery: deliveryRows,
@@ -377,6 +396,7 @@ export function marketplaceAnalytics(
     today: emptyToday(new Date()),
     hourly: [],
     products: [],
+    slowMovers: [],
     cancellations: [],
     repeat: { customers: 0, repeatCustomers: 0, repeatOrders: 0, repeatRate: 0, basis: "Not available" },
     delivery: [],

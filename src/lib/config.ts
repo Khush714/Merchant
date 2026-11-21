@@ -138,6 +138,19 @@ export function validateProductionConfig(env: NodeJS.ProcessEnv = process.env, o
     if (!secret) warnings.push(`${key} is not configured; signed webhook endpoints return 503.`);
   }
 
+  // Payment gateway credentials are optional because paired outlets pay through Marketplace.
+  // A local gateway is live only with a complete key pair; the simulator is non-production only.
+  const paymentProvider = value(env, "PAYMENT_PROVIDER") || "auto";
+  if (!["auto", "razorpay", "dev"].includes(paymentProvider)) errors.push("PAYMENT_PROVIDER must be auto, razorpay or dev.");
+  if (paymentProvider === "dev" && production) errors.push("PAYMENT_PROVIDER=dev is not allowed in production.");
+  const razorpayKeyId = value(env, "RAZORPAY_KEY_ID");
+  const razorpayKeySecret = value(env, "RAZORPAY_KEY_SECRET");
+  if (Boolean(razorpayKeyId) !== Boolean(razorpayKeySecret)) errors.push("RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET must be set together.");
+  if (razorpayKeySecret && razorpayKeySecret.length < 16) errors.push("RAZORPAY_KEY_SECRET must contain at least 16 characters.");
+  if (paymentProvider === "razorpay" && (!razorpayKeyId || !razorpayKeySecret)) errors.push("PAYMENT_PROVIDER=razorpay requires both Razorpay credentials.");
+  if (!razorpayKeyId && production) warnings.push("Online payments are unavailable in production until Razorpay credentials are configured; paired outlets continue through Marketplace.");
+  if (!razorpayKeyId && !production && paymentProvider === "auto") warnings.push("RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET are not configured; local checkouts use the clearly labelled simulator.");
+
   const proxyHeader = value(env, "TRUSTED_PROXY_IP_HEADER");
   if (proxyHeader && !HEADER_NAME.test(proxyHeader)) errors.push("TRUSTED_PROXY_IP_HEADER must be a valid HTTP header name.");
   if (!proxyHeader && !env.VERCEL) warnings.push("No TRUSTED_PROXY_IP_HEADER is configured; clients share one rate-limit bucket.");

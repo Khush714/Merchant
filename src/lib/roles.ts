@@ -11,18 +11,20 @@ export type Permission =
   | "overview.read"
   | "settings.write"
   | "settlements.read"
+  | "payments.read" | "payments.write" | "payments.refund"
+  | "finance.write"
   | "compliance.read" | "compliance.write"
   | "staff.write"
   | "integration.write";
 
 export const ALL_PERMISSIONS: readonly Permission[] = [
   "orders.read", "orders.write", "menu.read", "menu.write", "menu.availability", "offers.read", "offers.write",
-  "feedback.write", "overview.read", "settings.write", "settlements.read", "compliance.read", "compliance.write", "staff.write", "integration.write",
+  "feedback.write", "overview.read", "settings.write", "settlements.read", "payments.read", "payments.write", "payments.refund", "finance.write", "compliance.read", "compliance.write", "staff.write", "integration.write",
 ];
 
 export const ROLE_PERMISSIONS: Record<StaffRole, readonly Permission[]> = {
   // Managers run the outlet but cannot change who has access or rewire the Marketplace integration.
-  manager: ["orders.read", "orders.write", "menu.read", "menu.write", "menu.availability", "offers.read", "offers.write", "feedback.write", "overview.read", "settings.write", "settlements.read", "compliance.read"],
+  manager: ["orders.read", "orders.write", "menu.read", "menu.write", "menu.availability", "offers.read", "offers.write", "feedback.write", "overview.read", "settings.write", "settlements.read", "payments.read", "compliance.read"],
   // Kitchen only works the order queue; it cannot see pricing, promotions or payouts.
   kitchen: ["orders.read", "orders.write", "overview.read"],
   // Servers handle orders and item availability, but cannot edit prices or archive items.

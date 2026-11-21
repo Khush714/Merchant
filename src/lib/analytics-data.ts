@@ -2,11 +2,12 @@ import "server-only";
 
 import { and, asc, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { orderItems, orders, settlements } from "@/db/schema";
+import { menuItems, orderItems, orders, settlements } from "@/db/schema";
 import {
   getMarketplaceLink,
   marketplaceFetch,
   parseMarketplaceResponse,
+  parseRemoteMenuItems,
   parseRemoteOrders,
 } from "@/lib/marketplace-bridge";
 import { loadRevenueSummary } from "@/lib/revenue-data";
@@ -18,9 +19,10 @@ import {
   type AnalyticsSettlementTotals,
 } from "./analytics-core";
 
-const REMOTE_PAGE_SIZE = 50;
-const MAX_REMOTE_PAGES = 10;
+const REMOTE_PAGE_SIZE = 50; // Marketplace's order inbox clamps `limit` to 50.
 const LOCAL_LIMIT = 1_000;
+// The remote path must reach the same documented cap as the local path: 50 ├ù 20 = 1,000.
+const MAX_REMOTE_PAGES = 20;
 
 type OrderFactResult = { rows: AnalyticsOrderRow[]; truncated: boolean };
 
@@ -143,6 +145,22 @@ async function loadSettlementTotals(businessId: string, range: NormalizedRevenue
   };
 }
 
+/** Active menu names seed product movement so an item with no sales is still a slow mover. */
+async function loadProductCatalog(businessId: string, paired: boolean): Promise<string[]> {
+  if (paired) {
+    const remote = await marketplaceFetch(businessId, "/api/integration/merchant/menu/items");
+    return parseMarketplaceResponse(remote, (body) => parseRemoteMenuItems(body, businessId))
+      .filter((item) => !item.archived)
+      .map((item) => item.name);
+  }
+  const rows = await db.select({ name: menuItems.name })
+    .from(menuItems)
+    .where(and(eq(menuItems.businessId, businessId), eq(menuItems.archived, false)))
+    .orderBy(asc(menuItems.name))
+    .limit(500);
+  return rows.map((row) => row.name);
+}
+
 /**
  * One source for the Insights report. Totals always come from the Revenue loader so
  * paired and local outlets agree with the Revenue tab; the new BI sections are
@@ -157,9 +175,10 @@ export async function loadAdvancedAnalytics(
     loadRevenueSummary(businessId, range),
     getMarketplaceLink(businessId),
   ]);
-  const [settlementTotals, previousSummary] = await Promise.all([
+  const [settlementTotals, previousSummary, productCatalog] = await Promise.all([
     loadSettlementTotals(businessId, range),
     previous ? loadRevenueSummary(businessId, previous) : Promise.resolve(null),
+    loadProductCatalog(businessId, !!paired),
   ]);
   const [current, prior] = await Promise.all([
     paired ? loadRemoteOrderFacts(businessId, range) : loadLocalOrderFacts(businessId, range),
@@ -173,6 +192,7 @@ export async function loadAdvancedAnalytics(
   return buildAdvancedAnalytics(current.rows, range, summary, {
     source: paired ? "marketplace" : "local",
     settlements: settlementTotals,
+    productCatalog,
     previousRows: prior.rows,
     previousSummary,
     previousLabel: previous ? comparisonLabel(range) : null,
