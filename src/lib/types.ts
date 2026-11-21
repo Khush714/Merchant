@@ -268,7 +268,60 @@ export type AdvancedKpis = {
 export type AnalyticsDailyRow = { date: string; orders: number; completed: number; grossSales: number; discounts: number };
 export type AnalyticsGroupRow = { label: string; orders: number; completed: number; grossSales: number };
 export type AnalyticsOfferRow = { code: string; redemptions: number; discountGiven: number; grossSales: number };
-/** Paired outlets keep order-level breakdowns in Marketplace; only authoritative totals are returned. */
+/** Today's snapshot, grouped by the same India Standard Time day used by Revenue. */
+export type AnalyticsToday = {
+  date: string;
+  revenue: number;
+  completedOrders: number;
+  ordersPlaced: number;
+  averageOrderValue: number;
+  completionRate: number;
+};
+export type AnalyticsHourRow = { hour: number; label: string; orders: number; completed: number; grossSales: number };
+export type AnalyticsProductRow = {
+  name: string;
+  unitsSold: number;
+  grossSales: number;
+  orders: number;
+  avgPrepMinutes: number | null;
+};
+export type AnalyticsReasonRow = { reason: string; orders: number; lostValue: number };
+export type AnalyticsRepeat = {
+  customers: number;
+  repeatCustomers: number;
+  repeatOrders: number;
+  repeatRate: number;
+  basis: string;
+};
+export type AnalyticsDeliveryRow = {
+  label: string;
+  orders: number;
+  completed: number;
+  cancelled: number;
+  completionRate: number;
+};
+export type AnalyticsProfitability = {
+  grossSales: number;
+  discounts: number;
+  commission: number;
+  refunds: number;
+  adjustments: number;
+  netPaid: number;
+  netAfterFees: number;
+  source: "settlements" | "revenue" | "none";
+};
+export type AnalyticsComparisonRow = {
+  label: string;
+  current: number;
+  previous: number;
+  changePct: number | null;
+  money: boolean;
+};
+/**
+ * Order-level business intelligence for a range. Money stays in paise; every
+ * breakdown is derived from order facts while the headline totals stay
+ * Marketplace-owned for paired outlets.
+ */
 export type AdvancedAnalytics = {
   from: string | null;
   to: string | null;
@@ -281,6 +334,18 @@ export type AdvancedAnalytics = {
   fulfilment: AnalyticsGroupRow[];
   payments: AnalyticsGroupRow[];
   offers: AnalyticsOfferRow[];
+  today: AnalyticsToday;
+  hourly: AnalyticsHourRow[];
+  products: AnalyticsProductRow[];
+  /** Lowest-unit products from the full menu, including items with zero sales. */
+  slowMovers: AnalyticsProductRow[];
+  cancellations: AnalyticsReasonRow[];
+  repeat: AnalyticsRepeat;
+  delivery: AnalyticsDeliveryRow[];
+  profitability: AnalyticsProfitability;
+  comparison: AnalyticsComparisonRow[];
+  comparisonLabel: string | null;
+  ordersTruncated: boolean;
   notice?: string;
   truncated?: boolean;
 };
