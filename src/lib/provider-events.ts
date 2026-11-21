@@ -23,6 +23,10 @@ export type ParsedProviderEvent = {
   occurredAt: string;
   trackingId: string;
   reference: string;
+  /** Optional paise amount. When supplied it must match the order total before a payment is accepted. */
+  amountPaise: number | null;
+  failureCode: string;
+  failureMessage: string;
 };
 
 export class ProviderEventError extends Error {
@@ -41,6 +45,12 @@ function text(value: unknown, label: string, max: number, pattern?: RegExp) {
   if (typeof value !== "string" || value.length > max) fail(`${label} is invalid.`);
   if (pattern && !pattern.test(value)) fail(`${label} is invalid.`);
   if (/[\u0000-\u001f\u007f]/.test(value)) fail(`${label} contains control characters.`);
+  return value;
+}
+
+function optionalInteger(value: unknown, label: string, max: number) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > max) fail(`${label} is invalid.`);
   return value;
 }
 
@@ -65,7 +75,13 @@ export function parseProviderEvent(provider: ProviderKind, payload: unknown): Pa
   const occurredAt = new Date(timestamp).toISOString();
   const trackingId = text(body.trackingId ?? "", "trackingId", 128);
   const reference = text(body.reference ?? "", "reference", 128);
-  return { provider, eventId, businessId, orderId, orderCode, type: type as ProviderEventType, occurredAt, trackingId, reference };
+  const amountPaise = optionalInteger(body.amountPaise, "amountPaise", 2_147_483_647);
+  const failureCode = text(body.failureCode ?? "", "failureCode", 64);
+  const failureMessage = text(body.failureMessage ?? "", "failureMessage", 200);
+  return {
+    provider, eventId, businessId, orderId, orderCode, type: type as ProviderEventType,
+    occurredAt, trackingId, reference, amountPaise, failureCode, failureMessage,
+  };
 }
 
 /** The signed preimage is `<unix seconds>.<raw JSON body>`; no parsed/re-serialized body is used. */

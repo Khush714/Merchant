@@ -34,6 +34,8 @@ const PAIRS = [
   ["0016_service_config", "20261123000000_service_config"],
   ["0017_supabase_rls", "20261124000000_supabase_rls"],
   ["0018_compliance_money_docs", "20261125000000_compliance_money_docs"],
+  ["0019_payment_ledger", "20261126000000_payment_ledger"],
+  ["0020_financial_operations", "20261127000000_financial_operations"],
 ];
 
 // Supabase only: a superseded OAuth experiment that the next bridge migration drops.

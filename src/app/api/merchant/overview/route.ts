@@ -9,11 +9,12 @@ import { can } from "@/lib/roles";
 import { ApiError, fail, recordAudit, requireBusiness } from "@/lib/server";
 import { syncMarketplaceSettlements } from "@/lib/settlements";
 import { logError } from "@/lib/telemetry";
-import type { FeedbackSummary, Settlement, SettlementSync } from "@/lib/types";
+import type { FeedbackSummary, Settlement, SettlementSync, SettlementTotals } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 const iso = (value: Date | null) => value ? value.toISOString() : null;
 const NO_SETTLEMENT_ACCESS: SettlementSync = { linked: false, status: "idle", lastSyncedAt: null };
+const EMPTY_TOTALS: SettlementTotals = { count: 0, gross: 0, fees: 0, refunds: 0, adjustments: 0, net: 0 };
 
 function settlementDto(row: typeof settlements.$inferSelect): Settlement {
   return {
@@ -43,6 +44,19 @@ async function savedSettlements(businessId: string) {
   return rows.map(settlementDto);
 }
 
+/** Aggregate every saved paid settlement so the KPI is not capped by the 50-row preview list. */
+async function savedTotals(businessId: string): Promise<SettlementTotals> {
+  const [row] = await db.select({
+    count: sql<number>`count(*)::int`,
+    gross: sql<number>`coalesce(sum(${settlements.grossAmount}), 0)`.mapWith(Number),
+    fees: sql<number>`coalesce(sum(${settlements.commissionAmount}), 0)`.mapWith(Number),
+    refunds: sql<number>`coalesce(sum(${settlements.refundAmount}), 0)`.mapWith(Number),
+    adjustments: sql<number>`coalesce(sum(${settlements.adjustmentAmount}), 0)`.mapWith(Number),
+    net: sql<number>`coalesce(sum(${settlements.netAmount}), 0)`.mapWith(Number),
+  }).from(settlements).where(and(eq(settlements.businessId, businessId), eq(settlements.status, "paid")));
+  return row ?? EMPTY_TOTALS;
+}
+
 export async function GET(request: NextRequest) {
   try {
     const { business, role } = await requireBusiness("overview.read");
@@ -50,6 +64,7 @@ export async function GET(request: NextRequest) {
     const link = await getMarketplaceLink(business.id);
     const lastSyncedAt = iso(link?.settlementsSyncedAt ?? null);
     let settlementRows: Settlement[] = [];
+    let totals: SettlementTotals = EMPTY_TOTALS;
     let settlementSync: SettlementSync = canSeeSettlements
       ? { linked: Boolean(link), status: "idle", lastSyncedAt }
       : NO_SETTLEMENT_ACCESS;
@@ -78,22 +93,24 @@ export async function GET(request: NextRequest) {
           settlementSync = { linked: true, status: "error", lastSyncedAt, message: "Settlement records couldn’t be refreshed. Showing the last saved records.", canRetry: true };
         }
         settlementRows = await savedSettlements(business.id);
+        totals = await savedTotals(business.id);
       }
 
       return NextResponse.json({
         business: mappedBusiness,
-        overview: { ...parsed.overview, settlements: settlementRows, settlementSync },
+        overview: { ...parsed.overview, settlements: settlementRows, settlementSync, settlementTotals: totals },
       }, { headers: { "Cache-Control": "no-store" } });
     }
 
     const date = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
     const start = new Date(`${date}T00:00:00+05:30`);
     const feedbackStart = new Date(Date.now() - FEEDBACK_WINDOW_DAYS * 86400000);
-    const [groups, [today], [completed], localSettlements, [latestNew], [feedbackRow]] = await Promise.all([
+    const [groups, [today], [completed], localSettlements, localTotals, [latestNew], [feedbackRow]] = await Promise.all([
       db.select({ status: orders.status, count: sql<number>`count(*)::int` }).from(orders).where(eq(orders.businessId, business.id)).groupBy(orders.status),
       db.select({ count: sql<number>`count(*)::int` }).from(orders).where(and(eq(orders.businessId, business.id), gte(orders.createdAt, start))),
       db.select({ count: sql<number>`count(*)::int`, total: sql<number>`coalesce(sum(${orders.total}), 0)`.mapWith(Number) }).from(orders).where(and(eq(orders.businessId, business.id), eq(orders.status, "completed"), gte(orders.updatedAt, start))),
       canSeeSettlements ? savedSettlements(business.id) : Promise.resolve([] as Settlement[]),
+      canSeeSettlements ? savedTotals(business.id) : Promise.resolve(EMPTY_TOTALS),
       db.select({ id: orders.id }).from(orders).where(and(eq(orders.businessId, business.id), eq(orders.status, "new"))).orderBy(desc(orders.createdAt)).limit(1),
       db.select({
         average: sql<number | null>`avg(${orders.rating})::float`,
@@ -115,7 +132,7 @@ export async function GET(request: NextRequest) {
     settlementRows = localSettlements;
     return NextResponse.json({
       business,
-      overview: { counts, todaySales: completed.total, todayOrders: today.count, completedToday: completed.count, latestNewOrderId: latestNew?.id ?? null, settlements: settlementRows, settlementSync, feedback },
+      overview: { counts, todaySales: completed.total, todayOrders: today.count, completedToday: completed.count, latestNewOrderId: latestNew?.id ?? null, settlements: settlementRows, settlementSync, settlementTotals: localTotals, feedback },
     }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) { return fail(error, request); }
 }

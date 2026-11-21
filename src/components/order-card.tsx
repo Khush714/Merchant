@@ -3,7 +3,7 @@ import { ArrowRight, Bike, Check, ChefHat, Clock3, MapPin, MoreHorizontal, Shopp
 import type { Order, OrderStatus } from "@/lib/types";
 import { money } from "@/lib/types";
 
-export type OrderAction = "accepted" | "rejected" | "preparing" | "ready" | "out_for_delivery" | "completed";
+export type OrderAction = "accepted" | "rejected" | "cancelled" | "preparing" | "ready" | "out_for_delivery" | "completed";
 export const statusLabel: Record<OrderStatus, string> = { new: "New order", accepted: "Accepted", preparing: "Preparing", ready: "Ready", out_for_delivery: "Out for delivery", completed: "Completed", rejected: "Rejected", cancelled: "Cancelled" };
 const courierLabel: Record<string, string> = { assigned: "Rider assigned", picked_up: "Picked up", out_for_delivery: "Out for delivery", delivered: "Delivered by courier", failed: "Courier failed" };
 const paymentLabel: Record<string, string> = { authorized: "Authorized", paid: "Paid", failed: "Payment failed", refunded: "Refunded" };
@@ -57,6 +57,7 @@ export function OrderCard({ order, onAction, onDetails, onFulfilmentChange, fulf
       {order.status === "ready" && order.fulfilment === "pickup" && <button className="btn btn-outline full" disabled={busy} onClick={() => onAction(order, "completed")}><ShoppingBag size={16} /> Confirm handoff</button>}
       {order.status === "ready" && order.fulfilment === "delivery" && <><div className="awaiting-delivery"><Bike size={15} /> Waiting for rider assignment</div><button className="btn btn-primary full" disabled={busy} onClick={() => onAction(order, "out_for_delivery")}><Bike size={16} /> Assign rider &amp; dispatch</button></>}
       {order.status === "out_for_delivery" && <><div className="awaiting-delivery"><Bike size={15} /> Rider is on the way</div><button className="btn btn-outline full" disabled={busy} onClick={() => onAction(order, "completed")}><Check size={16} /> Mark delivered</button></>}
+      {["accepted", "preparing", "ready"].includes(order.status) && <button className="btn btn-ghost full" disabled={busy} onClick={() => onAction(order, "cancelled")}>Cancel order</button>}
       {["completed", "cancelled", "rejected"].includes(order.status) && <button className="btn btn-ghost full" onClick={() => onDetails(order)}>View details <ArrowRight size={15} /></button>}
     </div>
   </article>;

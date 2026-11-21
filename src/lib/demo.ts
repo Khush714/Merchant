@@ -65,5 +65,5 @@ export function demoOverview(orders: Order[]): Overview {
     badOrders: ratings.filter((rating) => rating <= 2).length,
     pendingReplies: reviewed.filter((order) => !order.merchantResponse).length,
   };
-  return { counts, todaySales: 1845000, todayOrders: 38, completedToday: 31, settlements: [], settlementSync: { linked: false, status: "idle", lastSyncedAt: null }, feedback };
+  return { counts, todaySales: 1845000, todayOrders: 38, completedToday: 31, settlements: [], settlementSync: { linked: false, status: "idle", lastSyncedAt: null }, settlementTotals: { count: 0, gross: 0, fees: 0, refunds: 0, adjustments: 0, net: 0 }, feedback };
 }

@@ -2,11 +2,13 @@ import "server-only";
 
 import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
-import { orderEvents, orders, providerEvents } from "@/db/schema";
+import { orderEvents, orders, paymentAttempts, providerEvents } from "@/db/schema";
 import { isUniqueViolation } from "@/lib/db-errors";
 import { getMarketplaceLink } from "@/lib/marketplace-bridge";
+import { nextPaymentState, normalizeFailure, verifyPaymentAmount, type PaymentState } from "@/lib/payment-state";
+import { recordProviderRefund } from "@/lib/refunds";
 import {
-  type CourierEventType, type ParsedProviderEvent, type PaymentEventType, type ProviderKind,
+  type CourierEventType, type ParsedProviderEvent, type PaymentEventType,
 } from "@/lib/provider-events";
 import { ApiError, recordAudit } from "@/lib/server";
 import type { NextRequest } from "next/server";
@@ -94,9 +96,61 @@ export async function applyProviderEvent(request: NextRequest, event: ParsedProv
     }
 
     const type = event.type as PaymentEventType;
+    const failure = normalizeFailure(event.failureCode, event.failureMessage);
+    const reference = event.reference;
+    const [existingAttempt] = await tx.select().from(paymentAttempts).where(and(
+      eq(paymentAttempts.businessId, event.businessId),
+      eq(paymentAttempts.orderId, current.id),
+      eq(paymentAttempts.providerReference, reference),
+    )).limit(1);
+
+    // The attempt is the finer-grained authority; older installs may only have the order string.
+    const currentState = (existingAttempt?.status ?? current.paymentStatus) as PaymentState;
+    const transition = nextPaymentState(currentState, type);
+    const amountCheck = type === "paid" ? verifyPaymentAmount(event.amountPaise, current.total) : { ok: true as const };
+    if (!transition.ok) {
+      await tx.update(providerEvents).set({ outcome: "ignored", reason: transition.reason }).where(eq(providerEvents.id, inserted.id));
+      return { ...base, outcome: "ignored", reason: transition.reason };
+    }
+    if (!amountCheck.ok) {
+      await tx.update(providerEvents).set({ outcome: "ignored", reason: amountCheck.reason }).where(eq(providerEvents.id, inserted.id));
+      return { ...base, outcome: "ignored", reason: amountCheck.reason };
+    }
+    const nextState = transition.state;
+
+    const [attempt] = existingAttempt
+      ? await tx.update(paymentAttempts).set({
+        amountPaise: event.amountPaise ?? existingAttempt.amountPaise,
+        status: nextState,
+        failureCode: type === "failed" ? failure.code : "",
+        failureMessage: type === "failed" ? failure.message : "",
+        lastEventId: event.eventId, lastEventAt: occurredAt, updatedAt: new Date(),
+      }).where(eq(paymentAttempts.id, existingAttempt.id)).returning()
+      : await tx.insert(paymentAttempts).values({
+        businessId: event.businessId, orderId: current.id, provider: "savour",
+        providerReference: reference, amountPaise: event.amountPaise ?? current.total,
+        currency: "INR", status: nextState,
+        failureCode: type === "failed" ? failure.code : "",
+        failureMessage: type === "failed" ? failure.message : "",
+        firstEventId: event.eventId, lastEventId: event.eventId, lastEventAt: occurredAt,
+      }).returning();
+
+    await tx.update(providerEvents).set({
+      paymentAttemptId: attempt.id, amountPaise: event.amountPaise,
+      failureCode: failure.code, failureMessage: failure.message,
+    }).where(eq(providerEvents.id, inserted.id));
+
+    if (type === "refunded") {
+      await recordProviderRefund({
+        businessId: event.businessId, orderId: current.id,
+        providerRefundId: reference || event.eventId,
+        amountPaise: event.amountPaise, occurredAt: occurredAt,
+      });
+    }
+
     const [updated] = await tx.update(orders).set({
       paymentStatus: PAYMENT_STATUS[type],
-      paymentReference: event.reference || current.paymentReference,
+      paymentReference: reference || current.paymentReference,
       paymentUpdatedAt: occurredAt, updatedAt: new Date(),
     }).where(eq(orders.id, current.id)).returning();
     await tx.insert(orderEvents).values({

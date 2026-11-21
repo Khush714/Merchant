@@ -72,4 +72,24 @@
 .compliance-invoice-row{display:grid;grid-template-columns:minmax(0,1fr) 92px 108px 76px;gap:10px;align-items:center;font-size:11px}.compliance-invoice-row>span:not(:first-child){color:#66736c}.compliance-invoice-row .btn{justify-self:end}
 .agreement-body{white-space:pre-line;font-size:12px;line-height:1.75;color:#5b6a63;background:#fbfcfa;border:1px solid var(--line);border-radius:9px;padding:16px 18px;max-height:420px;overflow:auto}
 @media(max-width:700px){.compliance-status-grid{grid-template-columns:1fr 1fr}.compliance-invoice-row{grid-template-columns:1fr 1fr auto;gap:6px}.compliance-invoice-row>span:first-child{grid-column:1/-1}}
+.finance-form{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
+.finance-form label{display:flex;flex-direction:column;gap:5px;font-size:10px;font-weight:800;letter-spacing:.4px;text-transform:uppercase;color:#98a39c}
+.finance-form input,.finance-form select,.finance-form textarea{border:1px solid var(--line);border-radius:7px;padding:8px 9px;font-size:12px;background:#fff;color:var(--ink);min-width:110px;max-width:100%}
+.finance-form .btn{min-height:34px}
+.finance-actions{display:flex;gap:6px;flex-wrap:wrap}
+.finance-row{display:flex;justify-content:space-between;gap:12px;padding:9px 2px;border-bottom:1px solid var(--line);font-size:12px}
+.finance-row:last-child{border-bottom:0}
+.finance-row.negative strong{color:#b54a42}
+.finance-row.total{border-top:2px solid #34413b;font-weight:800;margin-top:4px}
+.finance-row small{color:#a4aea8}
+.finance-badge{font-size:9px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;border-radius:999px;padding:4px 8px;background:#eef5f1;color:#39946c;white-space:nowrap}
+.finance-badge.warn{background:#fff8e8;color:#b5842f}
+.finance-badge.bad{background:#fdf0ee;color:#b54a42}
+.finance-table{display:flex;flex-direction:column}
+.finance-table-head,.finance-table-row{display:grid;gap:10px;align-items:center;padding:9px 4px;border-bottom:1px solid var(--line);font-size:11px}
+.finance-table-head{color:#98a39c;font-size:10px;font-weight:800;letter-spacing:.5px;text-transform:uppercase}
+.finance-table-row:last-child{border-bottom:0}
+.finance-table-row>span:first-child{min-width:0;overflow-wrap:anywhere}
+.finance-table-row>span:not(:first-child){text-align:right;color:#66736c}
+.finance-table-row strong{font-weight:800;color:var(--ink)}
 

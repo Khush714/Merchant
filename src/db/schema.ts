@@ -266,10 +266,206 @@ export const providerEvents = pgTable("provider_events", {
   payloadHash: text("payload_hash").notNull(),
   occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  /** Set for payment events so the attempt ledger and the event trail stay linked. */
+  paymentAttemptId: uuid("payment_attempt_id"),
+  amountPaise: integer("amount_paise"),
+  failureCode: text("failure_code").notNull().default(""),
+  failureMessage: text("failure_message").notNull().default(""),
 }, (table) => [
   uniqueIndex("provider_events_provider_event_idx").on(table.provider, table.eventId),
   index("provider_events_business_idx").on(table.businessId, table.createdAt),
   index("provider_events_order_idx").on(table.orderId),
+  index("provider_events_attempt_idx").on(table.paymentAttemptId),
+]);
+
+/**
+ * One local/unpaired payment attempt per order and provider reference. Paired outlets never
+ * create rows here: Marketplace owns their payment state. Money is always integer paise.
+ */
+export const paymentAttempts = pgTable("payment_attempts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  orderId: uuid("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+  provider: text("provider").notNull().default("savour"),
+  providerReference: text("provider_reference").notNull().default(""),
+  amountPaise: integer("amount_paise").notNull().default(0),
+  currency: text("currency").notNull().default("INR"),
+  status: text("status").notNull().default("created"),
+  failureCode: text("failure_code").notNull().default(""),
+  failureMessage: text("failure_message").notNull().default(""),
+  firstEventId: text("first_event_id").notNull().default(""),
+  lastEventId: text("last_event_id").notNull().default(""),
+  lastEventAt: timestamp("last_event_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("payment_attempts_order_reference_idx").on(table.businessId, table.orderId, table.providerReference),
+  index("payment_attempts_business_created_idx").on(table.businessId, table.createdAt),
+  index("payment_attempts_business_status_idx").on(table.businessId, table.status, table.createdAt),
+]);
+
+/** Refund requests and their provider-confirmed outcome. Amounts are integer paise. */
+export const refunds = pgTable("refunds", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  orderId: uuid("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+  paymentAttemptId: uuid("payment_attempt_id").references(() => paymentAttempts.id, { onDelete: "set null" }),
+  amountPaise: integer("amount_paise").notNull(),
+  reason: text("reason").notNull().default(""),
+  status: text("status").notNull().default("requested"),
+  providerRefundId: text("provider_refund_id").notNull().default(""),
+  requestedBy: uuid("requested_by").references(() => users.id, { onDelete: "set null" }),
+  reviewedBy: uuid("reviewed_by").references(() => users.id, { onDelete: "set null" }),
+  note: text("note").notNull().default(""),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  settledAt: timestamp("settled_at", { withTimezone: true }),
+}, (table) => [
+  index("refunds_business_created_idx").on(table.businessId, table.createdAt),
+  index("refunds_order_idx").on(table.orderId),
+  uniqueIndex("refunds_provider_idx").on(table.businessId, table.providerRefundId),
+]);
+
+/** A cancellation is a deliberate order-level decision, optionally linked to a refund. */
+export const cancellations = pgTable("cancellations", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  orderId: uuid("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+  refundId: uuid("refund_id").references(() => refunds.id, { onDelete: "set null" }),
+  reason: text("reason").notNull().default(""),
+  actorId: uuid("actor_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [uniqueIndex("cancellations_order_idx").on(table.businessId, table.orderId)]);
+
+/** Versioned, per-outlet fee rules. Basis points avoid floating-point money. */
+export const feeSchedules = pgTable("fee_schedules", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  businessId: uuid("business_id").references(() => businesses.id, { onDelete: "cascade" }),
+  effectiveFrom: timestamp("effective_from", { withTimezone: true }).notNull(),
+  commissionBps: integer("commission_bps").notNull().default(0),
+  platformFixedPaise: integer("platform_fixed_paise").notNull().default(0),
+  gatewayBps: integer("gateway_bps").notNull().default(0),
+  gatewayFixedPaise: integer("gateway_fixed_paise").notNull().default(0),
+  gstBps: integer("gst_bps").notNull().default(0),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [index("fee_schedules_business_effective_idx").on(table.businessId, table.effectiveFrom)]);
+
+/** The gross-to-net bridge for one settlement row, split into named components. */
+export const settlementLines = pgTable("settlement_lines", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  settlementId: uuid("settlement_id").notNull().references(() => settlements.id, { onDelete: "cascade" }),
+  orderId: uuid("order_id").references(() => orders.id, { onDelete: "set null" }),
+  paymentAttemptId: uuid("payment_attempt_id").references(() => paymentAttempts.id, { onDelete: "set null" }),
+  grossPaise: integer("gross_paise").notNull().default(0),
+  commissionPaise: integer("commission_paise").notNull().default(0),
+  gatewayFeePaise: integer("gateway_fee_paise").notNull().default(0),
+  taxPaise: integer("tax_paise").notNull().default(0),
+  refundPaise: integer("refund_paise").notNull().default(0),
+  adjustmentPaise: integer("adjustment_paise").notNull().default(0),
+  netPaise: integer("net_paise").notNull().default(0),
+  source: text("source").notNull().default("marketplace"),
+  /** Capture/settlement time from the source, not the time this derived row was built. */
+  sourceAt: timestamp("source_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("settlement_lines_business_idx").on(table.businessId, table.createdAt),
+  uniqueIndex("settlement_lines_settlement_idx").on(table.settlementId),
+  index("settlement_lines_order_idx").on(table.orderId),
+]);
+
+/** A payout is money moving to a bank/UPI account, distinct from provider capture. */
+export const payouts = pgTable("payouts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  reference: text("reference").notNull(),
+  methodLabel: text("method_label").notNull().default(""),
+  status: text("status").notNull().default("scheduled"),
+  amountPaise: integer("amount_paise").notNull().default(0),
+  currency: text("currency").notNull().default("INR"),
+  source: text("source").notNull().default("marketplace"),
+  initiatedAt: timestamp("initiated_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  sourceUpdatedAt: timestamp("source_updated_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("payouts_business_reference_idx").on(table.businessId, table.reference),
+  index("payouts_business_created_idx").on(table.businessId, table.createdAt),
+]);
+
+/** Which settlements a payout actually paid. The reconciliation join between money and orders. */
+export const payoutAllocations = pgTable("payout_allocations", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  payoutId: uuid("payout_id").notNull().references(() => payouts.id, { onDelete: "cascade" }),
+  settlementId: uuid("settlement_id").references(() => settlements.id, { onDelete: "set null" }),
+  amountPaise: integer("amount_paise").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [uniqueIndex("payout_allocations_payout_settlement_idx").on(table.payoutId, table.settlementId)]);
+
+/** Immutable, per-outlet financial statement for a closed period. */
+export const settlementStatements = pgTable("settlement_statements", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  number: text("number").notNull(),
+  periodFrom: text("period_from").notNull(),
+  periodTo: text("period_to").notNull(),
+  grossPaise: integer("gross_paise").notNull().default(0),
+  commissionPaise: integer("commission_paise").notNull().default(0),
+  gatewayFeePaise: integer("gateway_fee_paise").notNull().default(0),
+  taxPaise: integer("tax_paise").notNull().default(0),
+  refundPaise: integer("refund_paise").notNull().default(0),
+  adjustmentPaise: integer("adjustment_paise").notNull().default(0),
+  netPaise: integer("net_paise").notNull().default(0),
+  lineCount: integer("line_count").notNull().default(0),
+  status: text("status").notNull().default("closed"),
+  checksum: text("checksum").notNull().default(""),
+  /** Immutable snapshot of the derived line ids; keeps a regenerated statement identical. */
+  lineIds: jsonb("line_ids").$type<string[]>().notNull().default([]),
+  generatedBy: uuid("generated_by").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [uniqueIndex("settlement_statements_business_number_idx").on(table.businessId, table.number)]);
+
+/** One reconciliation execution and its counts. */
+export const reconciliationRuns = pgTable("reconciliation_runs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+  status: text("status").notNull().default("running"),
+  orderCount: integer("order_count").notNull().default(0),
+  paymentCount: integer("payment_count").notNull().default(0),
+  settlementCount: integer("settlement_count").notNull().default(0),
+  payoutCount: integer("payout_count").notNull().default(0),
+  exceptionCount: integer("exception_count").notNull().default(0),
+  triggeredBy: uuid("triggered_by").references(() => users.id, { onDelete: "set null" }),
+  detail: jsonb("detail").$type<Record<string, unknown>>().notNull().default({}),
+});
+
+/** A typed mismatch surfaced by reconciliation, with an explicit resolution workflow. */
+export const reconciliationExceptions = pgTable("reconciliation_exceptions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  runId: uuid("run_id").notNull().references(() => reconciliationRuns.id, { onDelete: "cascade" }),
+  kind: text("kind").notNull(),
+  severity: text("severity").notNull().default("warning"),
+  orderId: uuid("order_id").references(() => orders.id, { onDelete: "set null" }),
+  paymentAttemptId: uuid("payment_attempt_id").references(() => paymentAttempts.id, { onDelete: "set null" }),
+  settlementId: uuid("settlement_id").references(() => settlements.id, { onDelete: "set null" }),
+  payoutId: uuid("payout_id").references(() => payouts.id, { onDelete: "set null" }),
+  expectedPaise: integer("expected_paise").notNull().default(0),
+  actualPaise: integer("actual_paise").notNull().default(0),
+  detail: text("detail").notNull().default(""),
+  status: text("status").notNull().default("open"),
+  resolutionNote: text("resolution_note").notNull().default(""),
+  resolvedBy: uuid("resolved_by").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+}, (table) => [
+  index("reconciliation_exceptions_business_idx").on(table.businessId, table.status, table.createdAt),
+  index("reconciliation_exceptions_run_idx").on(table.runId),
 ]);
 
 /**

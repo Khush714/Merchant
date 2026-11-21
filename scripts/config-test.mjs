@@ -72,6 +72,20 @@ assert.ok(halfDispatch.errors.some((line) => line.includes("COURIER_DISPATCH_URL
 const badHeader = validateProductionConfig({ ...required, TRUSTED_PROXY_IP_HEADER: "x fake header" });
 assert.ok(badHeader.errors.some((line) => line.includes("TRUSTED_PROXY_IP_HEADER")));
 
+const devGateway = validateProductionConfig({ ...required, NODE_ENV: "development" });
+assert.ok(devGateway.warnings.some((line) => line.includes("simulator")), "dev mode must be labelled when credentials are absent");
+const localGateway = validateProductionConfig({ ...required });
+assert.ok(localGateway.warnings.some((line) => line.includes("Online payments are unavailable in production")), "production must warn instead of simulating");
+const liveGateway = validateProductionConfig({ ...required, RAZORPAY_KEY_ID: "rzp_live_x", RAZORPAY_KEY_SECRET: "s".repeat(30) });
+assert.deepEqual(liveGateway.errors, []);
+assert.ok(!liveGateway.warnings.some((line) => line.includes("Online payments are unavailable")));
+const halfGateway = validateProductionConfig({ ...required, RAZORPAY_KEY_ID: "rzp_live_x" });
+assert.ok(halfGateway.errors.some((line) => line.includes("RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET")));
+const forcedDev = validateProductionConfig({ ...required, PAYMENT_PROVIDER: "dev" });
+assert.ok(forcedDev.errors.some((line) => line.includes("PAYMENT_PROVIDER=dev")));
+const badProvider = validateProductionConfig({ ...required, PAYMENT_PROVIDER: "stripe" });
+assert.ok(badProvider.errors.some((line) => line.includes("PAYMENT_PROVIDER must be")));
+
 const hosted = new URL(prepareDatabaseConnectionString("postgresql://user:pass@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres"));
 assert.equal(hosted.searchParams.get("sslmode"), "require", "hosted connections get TLS even from a bare pooler URL");
 assert.equal(hosted.searchParams.get("uselibpqcompat"), "true", "TLS uses libpq semantics for self-signed Postgres certificates");
