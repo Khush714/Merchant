@@ -1,10 +1,11 @@
 import "server-only";
 
-import { eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { businessMarketplaceLinks, settlements } from "@/db/schema";
 import { marketplaceFetch } from "@/lib/marketplace-bridge";
 import { ApiError } from "@/lib/server";
+import { maintainSettlementLinesInTx } from "@/lib/settlement-lines";
 import { MAX_SETTLEMENTS, parseSettlementPage, SettlementPayloadError, type ParsedSettlement } from "@/lib/settlement-payload";
 import { log, logError } from "@/lib/telemetry";
 
@@ -19,6 +20,7 @@ export type SettlementSyncResult = {
   skipped: number;
   throttled: boolean;
   truncated: boolean;
+  lineCount: number;
   lastSyncedAt: Date | null;
 };
 
@@ -38,7 +40,7 @@ async function runSync(businessId: string, options: { force?: boolean; minInterv
   // `settlementSyncAttemptedAt` is written only after a complete, valid fetch.
   // A failed attempt must never consume the next retry window.
   if (!options.force && link.settlementSyncAttemptedAt && now.getTime() - link.settlementSyncAttemptedAt.getTime() < minInterval) {
-    return { received: 0, applied: 0, skipped: 0, throttled: true, truncated: false, lastSyncedAt: link.settlementsSyncedAt };
+    return { received: 0, applied: 0, skipped: 0, throttled: true, truncated: false, lineCount: 0, lastSyncedAt: link.settlementsSyncedAt };
   }
 
   const all = new Map<string, ParsedSettlement>();
@@ -74,7 +76,7 @@ async function runSync(businessId: string, options: { force?: boolean; minInterv
 
   const rows = [...all.values()];
   const syncedAt = new Date();
-  const applied = await db.transaction(async (tx) => {
+  const { applied, lineCount } = await db.transaction(async (tx) => {
     let count = 0;
     // Re-read the link inside the transaction so a successful sync stamps both fields together.
     for (const row of rows) {
@@ -114,14 +116,34 @@ async function runSync(businessId: string, options: { force?: boolean; minInterv
       }).returning({ id: settlements.id });
       if (result.length) count++;
     }
+
+    // Only the explicit sync owns derived-line writes. Missing or stale legacy rows are
+    // repaired in the same transaction so a failed partial sync can always be retried.
+    const touchedIds = rows.length
+      ? (await tx.select({ id: settlements.id }).from(settlements)
+        .where(and(
+          eq(settlements.businessId, businessId),
+          inArray(settlements.marketplaceOrderId, [...new Set(rows.map((row) => row.marketplaceOrderId))]),
+        ))).map((row) => row.id)
+      : [];
+    const maintained = await maintainSettlementLinesInTx(tx, businessId, {
+      settlementIds: touchedIds,
+      includeMissing: true,
+    });
+
     await tx.update(businessMarketplaceLinks)
       .set({ settlementSyncAttemptedAt: syncedAt, settlementsSyncedAt: syncedAt })
       .where(eq(businessMarketplaceLinks.id, link.id));
-    return count;
+    return { applied: count, lineCount: maintained };
   });
 
-  log("settlement.sync_success", { received: rows.length, applied, skipped: rows.length - applied, pages: page - 1, truncated });
-  return { received: rows.length, applied, skipped: rows.length - applied, throttled: false, truncated, lastSyncedAt: syncedAt };
+  log("settlement.sync_success", {
+    received: rows.length, applied, lineCount, skipped: rows.length - applied, pages: page - 1, truncated,
+  });
+  return {
+    received: rows.length, applied, skipped: rows.length - applied, throttled: false,
+    truncated, lineCount, lastSyncedAt: syncedAt,
+  };
 }
 
 /** Mirror authoritative Marketplace payouts locally. Replays and stale feeds cannot duplicate or reverse rows. */

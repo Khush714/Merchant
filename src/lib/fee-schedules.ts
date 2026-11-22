@@ -3,6 +3,7 @@ import "server-only";
 import { and, desc, eq, lte } from "drizzle-orm";
 import { db } from "@/db";
 import { feeSchedules } from "@/db/schema";
+import type { DbQueryable } from "@/lib/db-types";
 import { validateSchedule, type FeeScheduleValues } from "@/lib/fee-math";
 import { ApiError } from "@/lib/server";
 import type { FeeScheduleDto } from "@/lib/types";
@@ -40,8 +41,11 @@ function dto(row: ScheduleRow | null, inherited: boolean): FeeScheduleDto {
 }
 
 /** Outlet-specific schedules win over global ones; the newest effective version wins within a scope. */
-export async function feeScheduleFor(businessId: string): Promise<{ values: FeeScheduleValues; dto: FeeScheduleDto }> {
-  const rows = await db.select().from(feeSchedules).where(and(
+export async function feeScheduleFor(
+  businessId: string,
+  reader: DbQueryable = db,
+): Promise<{ values: FeeScheduleValues; dto: FeeScheduleDto }> {
+  const rows = await reader.select().from(feeSchedules).where(and(
     eq(feeSchedules.active, true),
     lte(feeSchedules.effectiveFrom, new Date()),
   )).orderBy(desc(feeSchedules.effectiveFrom)).limit(50);

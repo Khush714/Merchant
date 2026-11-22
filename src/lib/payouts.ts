@@ -5,7 +5,6 @@ import { db } from "@/db";
 import { payoutAllocations, payouts, settlementLines, settlements } from "@/db/schema";
 import { marketplaceFetch } from "@/lib/marketplace-bridge";
 import { PayoutPayloadError, parsePayoutFeed } from "@/lib/payout-payload";
-import { ensureSettlementLines } from "@/lib/settlement-lines";
 import { ApiError } from "@/lib/server";
 import type { PayoutInbox, PayoutRecord } from "@/lib/types";
 
@@ -37,7 +36,6 @@ function dto(row: typeof payouts.$inferSelect, allocatedPaise: number): PayoutRe
 }
 
 export async function listPayouts(businessId: string): Promise<PayoutInbox> {
-  await ensureSettlementLines(businessId);
   const [rows, allocatedRows, lineTotal] = await Promise.all([
     db.select().from(payouts).where(eq(payouts.businessId, businessId)).orderBy(payouts.createdAt).limit(200),
     db.select({

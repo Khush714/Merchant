@@ -17,6 +17,7 @@ import {
   type ReconciliationReportDto,
   type RefundInbox,
   type RefundRecord,
+  type SettlementLinePage,
   type SettlementLineRecord,
   type StatementDetail,
   type StatementRecord,
@@ -67,6 +68,9 @@ function errMessage(error: unknown) { return error instanceof Error ? error.mess
 export function FinanceTabs({ active, role, demo, businessId, epoch, onChanged, notify }: Props) {
   const [finance, setFinance] = useState<FinanceSummary>(ZERO_FINANCE);
   const [lines, setLines] = useState<SettlementLineRecord[]>([]);
+  const [lineCursor, setLineCursor] = useState<string | null>(null);
+  const [linesHasMore, setLinesHasMore] = useState(false);
+  const [linesLoading, setLinesLoading] = useState(false);
   const [refunds, setRefunds] = useState<RefundInbox>(EMPTY_REFUNDS);
   const [statements, setStatements] = useState<StatementRecord[]>([]);
   const [payouts, setPayouts] = useState<PayoutInbox>(EMPTY_PAYOUTS);
@@ -79,25 +83,33 @@ export function FinanceTabs({ active, role, demo, businessId, epoch, onChanged, 
   const load = useCallback(async (signal: AbortSignal) => {
     if (demo || !businessId) return;
     setBusy(true);
+    setLinesLoading(true);
     const get = <T,>(path: string) => api<T>(path, { signal }).catch(() => null);
-    const [f, l, r, s, p, c, feeData] = await Promise.all([
-      get<FinanceSummary>("/api/merchant/finance"),
-      get<{ lines: SettlementLineRecord[] }>("/api/merchant/settlement-lines"),
-      get<RefundInbox>("/api/merchant/refunds"),
-      get<{ statements: StatementRecord[] }>("/api/merchant/statements"),
-      get<PayoutInbox>("/api/merchant/payouts"),
-      get<ReconciliationReportDto>("/api/merchant/reconciliation"),
-      get<{ schedule: FeeScheduleDto }>("/api/merchant/fees"),
-    ]);
-    if (signal.aborted) return;
-    if (f) setFinance(f);
-    if (l) setLines(l.lines);
-    if (r) setRefunds(r);
-    if (s) setStatements(s.statements);
-    if (p) setPayouts(p);
-    if (c) setRecon(c);
-    if (feeData) setFee(feeData.schedule);
-    setBusy(false);
+    try {
+      const [f, l, r, s, p, c, feeData] = await Promise.all([
+        get<FinanceSummary>("/api/merchant/finance"),
+        get<SettlementLinePage>("/api/merchant/settlement-lines?limit=200"),
+        get<RefundInbox>("/api/merchant/refunds"),
+        get<{ statements: StatementRecord[] }>("/api/merchant/statements"),
+        get<PayoutInbox>("/api/merchant/payouts"),
+        get<ReconciliationReportDto>("/api/merchant/reconciliation"),
+        get<{ schedule: FeeScheduleDto }>("/api/merchant/fees"),
+      ]);
+      if (signal.aborted) return;
+      if (f) setFinance(f);
+      if (l) {
+        setLines(l.lines);
+        setLineCursor(l.nextCursor);
+        setLinesHasMore(l.hasMore);
+      }
+      if (r) setRefunds(r);
+      if (s) setStatements(s.statements);
+      if (p) setPayouts(p);
+      if (c) setRecon(c);
+      if (feeData) setFee(feeData.schedule);
+    } finally {
+      if (!signal.aborted) { setBusy(false); setLinesLoading(false); }
+    }
   }, [demo, businessId]);
 
   // Load every finance view once when Earnings opens. Tab clicks then render cached state.
@@ -114,6 +126,20 @@ export function FinanceTabs({ active, role, demo, businessId, epoch, onChanged, 
     const controller = new AbortController();
     void load(controller.signal);
   }, [load, onChanged]);
+
+  // Payout allocation choices load one keyset page at a time instead of silently truncating.
+  const loadMoreLines = useCallback(async () => {
+    if (!lineCursor || linesLoading) return;
+    setLinesLoading(true);
+    try {
+      const path = `/api/merchant/settlement-lines?limit=200&cursor=${encodeURIComponent(lineCursor)}`;
+      const page = await api<SettlementLinePage>(path).catch(() => null);
+      if (!page) return;
+      setLines((previous) => [...previous, ...page.lines]);
+      setLineCursor(page.nextCursor);
+      setLinesHasMore(page.hasMore);
+    } finally { setLinesLoading(false); }
+  }, [lineCursor, linesLoading]);
 
   async function run(path: string, body: unknown, success: string, key: string) {
     if (actionBusy) return;
@@ -265,7 +291,7 @@ export function FinanceTabs({ active, role, demo, businessId, epoch, onChanged, 
         <div className="finance-actions">
           {canFinance && <button className="btn btn-outline" disabled={!!actionBusy} onClick={() => void run("/api/merchant/payouts/sync", {}, "Payout sync finished.", "payout-sync")}><RefreshCw size={15} /> {actionBusy === "payout-sync" ? "Syncing…" : "Sync from Marketplace"}</button>}
         </div>
-        {canFinance && <PayoutForm lines={lines} busy={actionBusy === "payout-new"} onSubmit={(body) => run("/api/merchant/payouts", body, "Payout recorded.", "payout-new")} />}
+        {canFinance && <PayoutForm lines={lines} hasMore={linesHasMore} loading={linesLoading} onMore={() => void loadMoreLines()} busy={actionBusy === "payout-new"} onSubmit={(body) => run("/api/merchant/payouts", body, "Payout recorded.", "payout-new")} />}
         <section className="panel item-report" style={{ marginTop: 14 }}>
           <div className="section-heading"><div><h3>Payout ledger</h3><p>Bank/UPI movements, distinct from provider capture.</p></div><span className="settings-icon"><CreditCard size={20} /></span></div>
           <div className="info-box">{payouts.notice}</div>
@@ -374,8 +400,11 @@ function StatementDetailView({ detail }: { detail: StatementDetail }) {
   </div>;
 }
 
-function PayoutForm({ lines, busy, onSubmit }: {
+function PayoutForm({ lines, hasMore, loading, onMore, busy, onSubmit }: {
   lines: SettlementLineRecord[];
+  hasMore: boolean;
+  loading: boolean;
+  onMore: () => void;
   busy: boolean;
   onSubmit: (body: Record<string, unknown>) => void;
 }) {
@@ -384,6 +413,18 @@ function PayoutForm({ lines, busy, onSubmit }: {
   const [amount, setAmount] = useState("");
   const [status, setStatus] = useState("paid");
   const [settlementId, setSettlementId] = useState("");
+  const [search, setSearch] = useState("");
+  // Search and a bounded option list keep large ledgers usable without loading
+  // the entire history into the DOM. Loaded pages still cover every allocation choice.
+  const options = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    const matched = term
+      ? lines.filter((line) => line.orderNumber.toLowerCase().includes(term)
+        || line.settlementId.toLowerCase().includes(term)
+        || line.id.toLowerCase().includes(term))
+      : lines;
+    return matched.slice(0, 100);
+  }, [lines, search]);
   const selected = useMemo(() => lines.find((line) => line.settlementId === settlementId), [lines, settlementId]);
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -401,10 +442,15 @@ function PayoutForm({ lines, busy, onSubmit }: {
       <option value="scheduled">Scheduled</option><option value="processing">Processing</option>
       <option value="paid">Paid</option><option value="failed">Failed</option>
     </select></label>
-    <label>Apply to settlement<select value={settlementId} onChange={(e) => setSettlementId(e.target.value)}>
-      <option value="">None</option>
-      {lines.map((line) => <option key={line.settlementId} value={line.settlementId}>#{line.orderNumber || line.id.slice(0, 8)} · {money(line.netPaise)}</option>)}
-    </select></label>
+    <label>Apply to settlement
+      <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search order or settlement" aria-label="Search settlement lines" />
+      <select value={settlementId} onChange={(e) => setSettlementId(e.target.value)}>
+        <option value="">None</option>
+        {options.map((line) => <option key={line.settlementId} value={line.settlementId}>#{line.orderNumber || line.id.slice(0, 8)} · {money(line.netPaise)}</option>)}
+      </select>
+      {hasMore && <button type="button" className="btn btn-outline" onClick={onMore} disabled={loading}>{loading ? "Loading…" : "Load more lines"}</button>}
+      <small>{lines.length ? `Showing ${options.length} of ${lines.length} loaded lines` : "No settlement lines loaded"}</small>
+    </label>
     <button className="btn btn-primary" type="submit" disabled={busy}><Plus size={15} /> {busy ? "Saving…" : "Record payout"}</button>
   </form>;
 }

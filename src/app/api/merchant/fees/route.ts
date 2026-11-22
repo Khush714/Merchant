@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { currentFeeSchedule, saveFeeSchedule } from "@/lib/fee-schedules";
 import { ApiError, fail, rateLimit, readJson, recordAudit, requireBusiness, sameOrigin } from "@/lib/server";
+import { maintainSettlementLines } from "@/lib/settlement-lines";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +29,12 @@ export async function POST(request: NextRequest) {
       gstBps: number("gstBps"),
       effectiveFrom: typeof body.effectiveFrom === "string" ? body.effectiveFrom : undefined,
     });
-    await recordAudit({ request, event: "fee-schedule.save", outcome: "success", businessId: business.id, detail: { scheduleId: schedule.id } });
-    return NextResponse.json({ schedule });
+    // A schedule version changes derived gateway/tax splits; rebuild explicitly so reads stay read-only.
+    const lineCount = await maintainSettlementLines(business.id, { full: true });
+    await recordAudit({
+      request, event: "fee-schedule.save", outcome: "success", businessId: business.id,
+      detail: { scheduleId: schedule.id, lineCount },
+    });
+    return NextResponse.json({ schedule, lineCount });
   } catch (error) { return fail(error, request); }
 }

@@ -1,5 +1,6 @@
 import { boolean, doublePrecision, index, integer, jsonb, pgTable, primaryKey, serial, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import type { DayPart, DeliveryZone, WeeklyDayHours } from "@/lib/service-config";
+import type { SettlementLineSnapshot } from "@/lib/types";
 import { DEFAULT_DELIVERY_RADIUS_METERS } from "@/lib/service-config";
 
 export const users = pgTable("users", {
@@ -369,6 +370,13 @@ export const settlementLines = pgTable("settlement_lines", {
   source: text("source").notNull().default("marketplace"),
   /** Capture/settlement time from the source, not the time this derived row was built. */
   sourceAt: timestamp("source_at", { withTimezone: true }),
+  /** Version of the derivation logic and fee schedule that produced this split. */
+  lineVersion: text("line_version").notNull().default("legacy"),
+  feeScheduleId: uuid("fee_schedule_id").references(() => feeSchedules.id, { onDelete: "set null" }),
+  sourceUpdatedAt: timestamp("source_updated_at", { withTimezone: true }),
+  rebuiltAt: timestamp("rebuilt_at", { withTimezone: true }),
+  expectedNetPaise: integer("expected_net_paise").notNull().default(0),
+  matchesAuthoritative: boolean("matches_authoritative").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index("settlement_lines_business_idx").on(table.businessId, table.createdAt),
@@ -425,6 +433,8 @@ export const settlementStatements = pgTable("settlement_statements", {
   checksum: text("checksum").notNull().default(""),
   /** Immutable snapshot of the derived line ids; keeps a regenerated statement identical. */
   lineIds: jsonb("line_ids").$type<string[]>().notNull().default([]),
+  /** Frozen line amounts for new statements; older statements fall back to lineIds/date range. */
+  lineSnapshot: jsonb("line_snapshot").$type<SettlementLineSnapshot[]>(),
   generatedBy: uuid("generated_by").references(() => users.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [uniqueIndex("settlement_statements_business_number_idx").on(table.businessId, table.number)]);

@@ -155,6 +155,13 @@
       "when": 1795660800000,
       "tag": "0024_phase2_query_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1795747200000,
+      "tag": "0025_settlement_line_architecture",
+      "breakpoints": true
     }
   ]
 }

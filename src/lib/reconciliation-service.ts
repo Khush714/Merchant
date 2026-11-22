@@ -11,7 +11,6 @@ import {
   classifyReconciliation,
   type ReconciliationAttempt, type ReconciliationOrder, type ReconciliationPayout, type ReconciliationSettlement,
 } from "@/lib/reconciliation-core";
-import { ensureSettlementLines } from "@/lib/settlement-lines";
 import { ApiError } from "@/lib/server";
 import type { ReconciliationExceptionRecord, ReconciliationReportDto, ReconciliationRunRecord } from "@/lib/types";
 
@@ -71,7 +70,6 @@ export async function getReconciliationReport(businessId: string): Promise<Recon
 
 /** Run an explicit reconciliation for the active outlet and persist a typed exception ledger. */
 export async function runReconciliation(businessId: string, actorId: string): Promise<ReconciliationReportDto> {
-  await ensureSettlementLines(businessId);
   const link = await getMarketplaceLink(businessId);
   let orderRows: ReconciliationOrder[];
   if (link) {

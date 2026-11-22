@@ -164,6 +164,27 @@ export type SettlementLineRecord = MoneyBreakdown & {
   orderNumber: string;
   source: string;
   createdAt: string;
+  lineVersion?: string;
+  feeScheduleId?: string | null;
+  sourceUpdatedAt?: string | null;
+  rebuiltAt?: string | null;
+  expectedNetPaise?: number;
+  matchesAuthoritative?: boolean;
+};
+
+/** Frozen line amounts embedded in a generated statement. */
+export type SettlementLineSnapshot = SettlementLineRecord & {
+  lineVersion: string;
+  feeScheduleId: string | null;
+  sourceUpdatedAt: string | null;
+  rebuiltAt: string | null;
+};
+
+export type SettlementLinePage = {
+  lines: SettlementLineRecord[];
+  count: number;
+  hasMore: boolean;
+  nextCursor: string | null;
 };
 
 export type StatementRecord = MoneyBreakdown & {

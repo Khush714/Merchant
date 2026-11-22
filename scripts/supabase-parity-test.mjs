@@ -37,6 +37,7 @@ const PAIRS = [
   ["0019_payment_ledger", "20261126000000_payment_ledger"],
   ["0020_financial_operations", "20261127000000_financial_operations"],
   ["0024_phase2_query_indexes", "20261201000000_phase2_query_indexes"],
+  ["0025_settlement_line_architecture", "20261202000000_settlement_line_architecture"],
 ];
 
 // Supabase only: a superseded OAuth experiment that the next bridge migration drops.

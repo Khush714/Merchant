@@ -23,13 +23,24 @@ function accountToken(value, email, purpose, expiry = "now() + interval '1 hour'
 }
 async function request(path, { method = "GET", cookie, body, headers = {} } = {}) {
   const send = () => fetch(`${base}${path}`, { method, headers: { ...headers, ...(cookie ? { cookie } : {}), ...(body ? { "content-type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
-  let response = await send();
+  // A pooled socket can be recycled by the local server while the rate-limit window is idle.
+  // Retry only that transport error; application responses are still asserted verbatim.
+  const sendFresh = async () => {
+    for (let attempt = 0; ; attempt++) {
+      try { return await send(); } catch (error) {
+        const reset = error instanceof TypeError && error.cause?.code === "ECONNRESET";
+        if (!reset || attempt >= 2) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+  };
+  let response = await sendFresh();
   // The auth bucket allows a fixed number of requests per IP per minute. A repeated run started
   // shortly after a previous one can trip it; wait for the window once instead of failing the run.
   if (response.status === 429) {
     console.warn("Rate limited; waiting 61s for the per-IP window to reset, then retrying once.");
     await new Promise((resolve) => setTimeout(resolve, 61_000));
-    response = await send();
+    response = await sendFresh();
   }
   const data = await response.json();
   return { status: response.status, data, cookie: response.headers.get("set-cookie")?.split(";")[0] };

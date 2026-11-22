@@ -11,6 +11,8 @@
     "test:provider-events": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/provider-event-test.mjs",
     "test:payment-state": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/payment-state-test.mjs",
     "test:fee-math": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/fee-math-test.mjs",
+    "test:settlement-lines": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/settlement-lines-equivalence-test.mjs",
+    "test:settlement-architecture": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/settlement-lines-architecture-test.mjs",
     "test:reconciliation": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/reconciliation-test.mjs",
     "test:payment-provider": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/payment-provider-test.mjs",
     "test:payout-payload": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/payout-payload-test.mjs",
@@ -33,7 +35,7 @@
     "test:order-query": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/order-query-test.mjs",
     "test:compliance": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/compliance-validation-test.mjs",
     "audit:prune": "node scripts/prune-audit-logs.mjs",
-    "test": "npm run test:settlements && npm run test:provider-events && npm run test:payment-state && npm run test:fee-math && npm run test:reconciliation && npm run test:payment-provider && npm run test:payout-payload && npm run test:urls && npm run test:config && node scripts/integration-test.mjs && npm run test:settlement-sync && npm run test:paired-flow && npm run test:revenue && npm run test:csv && npm run test:closure && npm run test:reviews && npm run test:items && npm run test:modifiers && npm run test:roles && npm run test:service && npm run test:analytics && npm run test:supabase && npm run test:order-query && npm run test:compliance"
+    "test": "npm run test:settlements && npm run test:provider-events && npm run test:payment-state && npm run test:fee-math && npm run test:settlement-lines && npm run test:reconciliation && npm run test:payment-provider && npm run test:payout-payload && npm run test:urls && npm run test:config && node scripts/integration-test.mjs && npm run test:settlement-sync && npm run test:paired-flow && npm run test:settlement-architecture && npm run test:revenue && npm run test:csv && npm run test:closure && npm run test:reviews && npm run test:items && npm run test:modifiers && npm run test:roles && npm run test:service && npm run test:analytics && npm run test:supabase && npm run test:order-query && npm run test:compliance"
   },
   "dependencies": {
     "baseline-browser-mapping": "^2.11.33",
