@@ -6,9 +6,7 @@ import { FEEDBACK_WINDOW_DAYS } from "@/lib/feedback";
 import { applyRemoteRestaurant, parseRemoteOverview } from "@/lib/marketplace-payload";
 import { getMarketplaceLink, marketplaceFetch, parseMarketplaceResponse } from "@/lib/marketplace-bridge";
 import { can } from "@/lib/roles";
-import { ApiError, fail, recordAudit, requireBusiness } from "@/lib/server";
-import { syncMarketplaceSettlements } from "@/lib/settlements";
-import { logError } from "@/lib/telemetry";
+import { fail, requireBusiness } from "@/lib/server";
 import type { FeedbackSummary, Settlement, SettlementSync, SettlementTotals } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -65,8 +63,14 @@ export async function GET(request: NextRequest) {
     const lastSyncedAt = iso(link?.settlementsSyncedAt ?? null);
     let settlementRows: Settlement[] = [];
     let totals: SettlementTotals = EMPTY_TOTALS;
+    // Overview is read-only: settlement sync runs only from the explicit POST workflow.
     let settlementSync: SettlementSync = canSeeSettlements
-      ? { linked: Boolean(link), status: "idle", lastSyncedAt }
+      ? {
+        linked: Boolean(link),
+        status: lastSyncedAt ? "synced" : "idle",
+        lastSyncedAt,
+        ...(lastSyncedAt ? {} : { message: "Settlements have not been synced yet. Use Refresh settlements in Earnings.", canRetry: true }),
+      }
       : NO_SETTLEMENT_ACCESS;
 
     if (link) {
@@ -75,23 +79,6 @@ export async function GET(request: NextRequest) {
       const mappedBusiness = applyRemoteRestaurant(business, parsed.restaurant);
 
       if (canSeeSettlements) {
-        try {
-          const result = await syncMarketplaceSettlements(business.id);
-          if (result.throttled) {
-            settlementSync = { linked: true, status: "throttled", lastSyncedAt: iso(result.lastSyncedAt), message: "Settlements were refreshed recently. Try again in a moment.", canRetry: true };
-          } else if (result.truncated) {
-            settlementSync = { linked: true, status: "truncated", lastSyncedAt: iso(result.lastSyncedAt), message: "Showing the newest 2,000 payouts. Older records remain in Marketplace.", canRetry: false };
-          } else {
-            settlementSync = { linked: true, status: "synced", lastSyncedAt: iso(result.lastSyncedAt) };
-          }
-          if (!result.throttled) {
-            await recordAudit({ request, event: "settlement.sync", outcome: "success", businessId: business.id, detail: { source: "overview", received: result.received, applied: result.applied, truncated: result.truncated } });
-          }
-        } catch (error) {
-          logError("settlement.sync_failed", error, { source: "overview" });
-          await recordAudit({ request, event: "settlement.sync", outcome: "failure", businessId: business.id, detail: { source: "overview", reason: error instanceof ApiError ? error.message : "sync_failed" } });
-          settlementSync = { linked: true, status: "error", lastSyncedAt, message: "Settlement records couldn’t be refreshed. Showing the last saved records.", canRetry: true };
-        }
         settlementRows = await savedSettlements(business.id);
         totals = await savedTotals(business.id);
       }
