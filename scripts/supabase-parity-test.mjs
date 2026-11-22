@@ -36,6 +36,7 @@ const PAIRS = [
   ["0018_compliance_money_docs", "20261125000000_compliance_money_docs"],
   ["0019_payment_ledger", "20261126000000_payment_ledger"],
   ["0020_financial_operations", "20261127000000_financial_operations"],
+  ["0024_phase2_query_indexes", "20261201000000_phase2_query_indexes"],
 ];
 
 // Supabase only: a superseded OAuth experiment that the next bridge migration drops.
@@ -59,7 +60,7 @@ function footprint(files) {
     tables: collect(/\bcreate table (?:if not exists )?([\w]+)/g),
     columns: collect(new RegExp(`\\b([a-z_]+)\\s+(?:${COLUMN_TYPE})\\b`, "g")),
     addedColumns: collect(/\badd column (?:if not exists )?([\w]+)/g),
-    indexes: collect(/\bcreate (?:unique )?index (?:if not exists )?([\w]+)/g),
+    indexes: collect(/\bcreate (?:unique )?index (?:concurrently )?(?:if not exists )?([\w]+)/g),
     text: sql,
   };
 }

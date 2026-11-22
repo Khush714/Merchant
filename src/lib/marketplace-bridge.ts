@@ -1,7 +1,7 @@
 import "server-only";
 
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { db } from "@/db";
 import { businessMarketplaceLinks } from "@/db/schema";
 import { MARKETPLACE_LINK_INVALID } from "@/lib/marketplace-link-status";
@@ -59,6 +59,16 @@ export function decryptMarketplaceToken(value: string): string {
 export async function getMarketplaceLink(businessId: string) {
   const [link] = await db.select().from(businessMarketplaceLinks).where(eq(businessMarketplaceLinks.businessId, businessId)).limit(1);
   return link ?? null;
+}
+
+export type MarketplaceLink = NonNullable<Awaited<ReturnType<typeof getMarketplaceLink>>>;
+
+/** Auth and list pages need every outlet's pairing state in one query, not one query per outlet. */
+export async function getMarketplaceLinks(businessIds: readonly string[]): Promise<Map<string, MarketplaceLink>> {
+  const ids = [...new Set(businessIds)];
+  if (!ids.length) return new Map();
+  const rows = await db.select().from(businessMarketplaceLinks).where(inArray(businessMarketplaceLinks.businessId, ids));
+  return new Map(rows.map((row) => [row.businessId, row]));
 }
 
 export function marketplaceApiBase(): string {

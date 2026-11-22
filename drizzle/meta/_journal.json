@@ -148,6 +148,13 @@
       "when": 1795315200004,
       "tag": "0020_financial_operations",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1795660800000,
+      "tag": "0024_phase2_query_indexes",
+      "breakpoints": true
     }
   ]
 }

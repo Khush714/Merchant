@@ -4,7 +4,7 @@ import { db } from "@/db";
 import { users } from "@/db/schema";
 import { consumeAccountToken, createAccountToken, isAccountToken } from "@/lib/account-tokens";
 import { isEmailConfigured, sendPasswordResetEmail, sendVerificationEmail } from "@/lib/email";
-import { getMarketplaceLink } from "@/lib/marketplace-bridge";
+import { getMarketplaceLink, getMarketplaceLinks } from "@/lib/marketplace-bridge";
 import { ApiError, BODY_LIMITS, businessForUser, businessesForUser, changePassword, createSession, currentUser, deleteAllSessions, deleteSession, fail, hashPassword, rateLimit, readJson, recordAudit, requireUser, sameOrigin, sessionContext, textValue, verificationRequired, verifyPassword } from "@/lib/server";
 import type { BusinessOption } from "@/lib/types";
 
@@ -27,8 +27,9 @@ export async function listingFor(userId: string, activeBusinessId?: string | nul
     businessForUser(userId, activeBusinessId),
     businessesForUser(userId),
   ]);
-  const options: BusinessOption[] = await Promise.all(available.map(async ({ business, role }) => {
-    const linked = Boolean(await getMarketplaceLink(business.id));
+  const links = await getMarketplaceLinks(available.map(({ business }) => business.id));
+  const options: BusinessOption[] = available.map(({ business, role }) => {
+    const linked = links.has(business.id);
     return {
       id: business.id,
       name: business.name,
@@ -38,7 +39,7 @@ export async function listingFor(userId: string, activeBusinessId?: string | nul
       role,
       linked,
     };
-  }));
+  });
   const business = active
     ? await withListingStatus(active.business, options.find((option) => option.id === active.business.id)?.linked)
     : null;

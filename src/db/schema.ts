@@ -230,6 +230,7 @@ export const orders = pgTable("orders", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index("orders_business_status_idx").on(table.businessId, table.status, table.createdAt),
+  index("orders_business_created_idx").on(table.businessId, table.createdAt),
   index("orders_business_feedback_idx").on(table.businessId, table.feedbackAt),
   uniqueIndex("orders_business_idempotency_idx").on(table.businessId, table.idempotencyHash),
 ]);
@@ -492,6 +493,7 @@ export const settlements = pgTable("settlements", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index("settlements_business_idx").on(table.businessId, table.createdAt),
+  index("settlements_business_status_paid_idx").on(table.businessId, table.status, table.paidAt),
   uniqueIndex("settlements_business_external_idx").on(table.businessId, table.externalId),
   uniqueIndex("settlements_business_order_idx").on(table.businessId, table.marketplaceOrderId),
 ]);
