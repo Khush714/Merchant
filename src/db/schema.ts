@@ -480,9 +480,10 @@ export const reconciliationExceptions = pgTable("reconciliation_exceptions", {
 ]);
 
 /**
- * Authoritative net-payout records mirrored from Marketplace. One row represents one completed order;
- * `amount` is the net paise actually deposited (or scheduled for deposit). Re-syncing replaces a row only
- * when Marketplace supplies a newer `sourceUpdatedAt`, so retries and replays cannot duplicate or roll back money.
+ * Authoritative net settlement records mirrored from Marketplace. One row represents one completed order's
+ * Marketplace-reported net result. `amount` is a reporting receivable, not money held or moved by Merchant.
+ * Re-syncing replaces a row only when Marketplace supplies a newer `sourceUpdatedAt`, so retries and replays
+ * cannot duplicate or roll back money.
  */
 export const settlements = pgTable("settlements", {
   id: uuid("id").primaryKey().defaultRandom(),

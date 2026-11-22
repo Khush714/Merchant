@@ -3,6 +3,7 @@ import { NextRequest } from "next/server";
 import { db } from "@/db";
 import { settlements } from "@/db/schema";
 import { csvDocument, csvRow, exportFilename, paiseDecimal } from "@/lib/csv";
+import { canonicalOrderDisplay } from "@/lib/order-identity";
 import { normalizeRevenueRange } from "@/lib/revenue";
 import { loadRevenueSummary } from "@/lib/revenue-data";
 import { ApiError, fail, requireBusiness } from "@/lib/server";
@@ -60,7 +61,7 @@ export async function GET(request: NextRequest) {
       for (const row of rows) {
         csvRows.push([
           new Date(row.paidAt ?? row.createdAt).toISOString().slice(0, 10),
-          row.orderNumber === null ? row.marketplaceOrderId || row.externalId : `SV-${row.orderNumber}`,
+          canonicalOrderDisplay(row),
           row.status,
           paiseDecimal(row.grossAmount), paiseDecimal(row.commissionAmount), paiseDecimal(row.refundAmount),
           paiseDecimal(row.adjustmentAmount), paiseDecimal(row.netAmount), row.reference, row.currency,

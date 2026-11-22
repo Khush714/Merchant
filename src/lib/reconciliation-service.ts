@@ -7,6 +7,7 @@ import {
   settlementLines, settlements, orders,
 } from "@/db/schema";
 import { getMarketplaceLink, marketplaceFetch, parseMarketplaceResponse, parseRemoteOrders } from "@/lib/marketplace-bridge";
+import { canonicalOrderKey } from "@/lib/order-identity";
 import {
   classifyReconciliation,
   type ReconciliationAttempt, type ReconciliationOrder, type ReconciliationPayout, type ReconciliationSettlement,
@@ -78,8 +79,10 @@ export async function runReconciliation(businessId: string, actorId: string): Pr
       const remote = await marketplaceFetch(businessId, `/api/integration/merchant/orders?status=all&page=${page}&limit=50`, { signal: AbortSignal.timeout(10_000) });
       const parsed = parseMarketplaceResponse(remote, (payload) => parseRemoteOrders(payload, businessId));
       for (const order of parsed.orders) {
+        // Paired `Order.id` is the Marketplace order code; use it before the numeric cast.
+        const key = canonicalOrderKey({ marketplaceOrderId: order.id, orderNumber: order.orderNumber });
         orderRows.push({
-          key: String(order.orderNumber), id: null, totalPaise: order.total,
+          key: key ?? "", id: null, totalPaise: order.total,
           paymentStatus: order.paymentStatus, status: order.status,
         });
       }
@@ -108,7 +111,7 @@ export async function runReconciliation(businessId: string, actorId: string): Pr
     key: String(orderNumber), id: attempt.id, status: attempt.status, amountPaise: attempt.amountPaise,
   }));
   const settlementData: ReconciliationSettlement[] = settlementRows.map(({ line, marketplaceOrderId, orderNumber }) => ({
-    key: String(orderNumber ?? marketplaceOrderId), id: line.settlementId, status: "settled",
+    key: canonicalOrderKey({ marketplaceOrderId, orderNumber }) ?? "", id: line.settlementId, status: "settled",
     grossPaise: line.grossPaise, commissionPaise: line.commissionPaise,
     gatewayFeePaise: line.gatewayFeePaise, taxPaise: line.taxPaise,
     refundPaise: line.refundPaise, adjustmentPaise: line.adjustmentPaise, netPaise: line.netPaise,

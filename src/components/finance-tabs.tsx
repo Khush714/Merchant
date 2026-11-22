@@ -293,7 +293,7 @@ export function FinanceTabs({ active, role, demo, businessId, epoch, onChanged, 
         </div>
         {canFinance && <PayoutForm lines={lines} hasMore={linesHasMore} loading={linesLoading} onMore={() => void loadMoreLines()} busy={actionBusy === "payout-new"} onSubmit={(body) => run("/api/merchant/payouts", body, "Payout recorded.", "payout-new")} />}
         <section className="panel item-report" style={{ marginTop: 14 }}>
-          <div className="section-heading"><div><h3>Payout ledger</h3><p>Bank/UPI movements, distinct from provider capture.</p></div><span className="settings-icon"><CreditCard size={20} /></span></div>
+          <div className="section-heading"><div><h3>Payout ledger</h3><p>Mirrored or manually recorded payout references, distinct from provider capture. No transfer is initiated here.</p></div><span className="settings-icon"><CreditCard size={20} /></span></div>
           <div className="info-box">{payouts.notice}</div>
           {payouts.payouts.length ? <div className="finance-table">
             <div className="finance-table-head" style={{ display: "grid", gridTemplateColumns: "minmax(0,1.2fr) 90px 90px 80px 110px" }}><span>Reference</span><span>Amount</span><span>Allocated</span><span>Status</span><span>Source</span></div>

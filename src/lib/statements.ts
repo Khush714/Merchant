@@ -7,6 +7,7 @@ import {
   payoutAllocations, settlementLines, settlementStatements, settlements,
 } from "@/db/schema";
 import { aggregateStatement } from "@/lib/fee-math";
+import { canonicalOrderKey } from "@/lib/order-identity";
 import { ApiError } from "@/lib/server";
 import type {
   FinanceSummary, SettlementLineRecord, SettlementLineSnapshot, StatementDetail, StatementRecord,
@@ -33,9 +34,10 @@ function statementDto(row: typeof settlementStatements.$inferSelect): StatementR
 }
 
 type LineRow = typeof settlementLines.$inferSelect;
-function lineRecord(line: LineRow, orderNumber: number | null): SettlementLineRecord {
+type LineIdentity = { marketplaceOrderId: string | null; orderNumber: number | null };
+function lineRecord(line: LineRow, identity: LineIdentity): SettlementLineRecord {
   return {
-    id: line.id, settlementId: line.settlementId, orderNumber: String(orderNumber ?? ""),
+    id: line.id, settlementId: line.settlementId, orderNumber: canonicalOrderKey(identity) ?? "",
     grossPaise: line.grossPaise, commissionPaise: line.commissionPaise,
     gatewayFeePaise: line.gatewayFeePaise, taxPaise: line.taxPaise,
     refundPaise: line.refundPaise, adjustmentPaise: line.adjustmentPaise,
@@ -47,8 +49,8 @@ function lineRecord(line: LineRow, orderNumber: number | null): SettlementLineRe
   };
 }
 
-function lineSnapshot(line: LineRow, orderNumber: number | null): SettlementLineSnapshot {
-  const record = lineRecord(line, orderNumber);
+function lineSnapshot(line: LineRow, identity: LineIdentity): SettlementLineSnapshot {
+  const record = lineRecord(line, identity);
   return {
     ...record,
     lineVersion: record.lineVersion ?? "legacy",
@@ -78,7 +80,9 @@ export async function statementDetail(businessId: string, id: string): Promise<S
     return { ...header, lines: row.lineSnapshot };
   }
 
-  const selectLines = () => db.select({ line: settlementLines, orderNumber: settlements.orderNumber })
+  const selectLines = () => db.select({
+    line: settlementLines, marketplaceOrderId: settlements.marketplaceOrderId, orderNumber: settlements.orderNumber,
+  })
     .from(settlementLines)
     .innerJoin(settlements, eq(settlementLines.settlementId, settlements.id))
     .where(eq(settlementLines.businessId, businessId))
@@ -90,11 +94,13 @@ export async function statementDetail(businessId: string, id: string): Promise<S
       const stamp = (line.sourceAt ?? line.createdAt).toISOString().slice(0, 10);
       return stamp >= row.periodFrom && stamp <= row.periodTo;
     });
-    return { ...header, lines: selected.map(({ line, orderNumber }) => lineRecord(line, orderNumber)) };
+    return { ...header, lines: selected.map(({ line, marketplaceOrderId, orderNumber }) => lineRecord(line, { marketplaceOrderId, orderNumber })) };
   }
 
   const snapshot = new Set(row.lineIds);
-  const lines = await db.select({ line: settlementLines, orderNumber: settlements.orderNumber })
+  const lines = await db.select({
+    line: settlementLines, marketplaceOrderId: settlements.marketplaceOrderId, orderNumber: settlements.orderNumber,
+  })
     .from(settlementLines)
     .innerJoin(settlements, eq(settlementLines.settlementId, settlements.id))
     .where(and(
@@ -102,7 +108,7 @@ export async function statementDetail(businessId: string, id: string): Promise<S
       inArray(settlementLines.id, [...snapshot]),
     ))
     .orderBy(settlements.createdAt, settlementLines.id);
-  return { ...header, lines: lines.map(({ line, orderNumber }) => lineRecord(line, orderNumber)) };
+  return { ...header, lines: lines.map(({ line, marketplaceOrderId, orderNumber }) => lineRecord(line, { marketplaceOrderId, orderNumber })) };
 }
 
 /** Generate (or idempotently return) an immutable statement for a closed period. */
@@ -111,7 +117,9 @@ export async function generateStatement(businessId: string, input: {
 }): Promise<StatementDetail> {
   const { start, end } = range(input.from, input.to);
   const stamp = sql`coalesce(${settlements.paidAt}, ${settlements.createdAt})`;
-  const rows = await db.select({ line: settlementLines, orderNumber: settlements.orderNumber })
+  const rows = await db.select({
+    line: settlementLines, marketplaceOrderId: settlements.marketplaceOrderId, orderNumber: settlements.orderNumber,
+  })
     .from(settlementLines).innerJoin(settlements, eq(settlementLines.settlementId, settlements.id))
     .where(and(eq(settlementLines.businessId, businessId), gte(stamp, start), lt(stamp, end)))
     .orderBy(stamp, settlementLines.id);
@@ -124,7 +132,7 @@ export async function generateStatement(businessId: string, input: {
   if (existing) return statementDetail(businessId, existing.id);
 
   const amounts = aggregateStatement(rows.map(({ line }) => line));
-  const lines = rows.map(({ line, orderNumber }) => lineSnapshot(line, orderNumber));
+  const lines = rows.map(({ line, marketplaceOrderId, orderNumber }) => lineSnapshot(line, { marketplaceOrderId, orderNumber }));
   const checksum = createHash("sha256").update(rows.map(({ line }) => `${line.settlementId}:${line.netPaise}`).sort().join("|")).digest("hex").slice(0, 24);
   const [created] = await db.insert(settlementStatements).values({
     businessId, number, periodFrom: input.from, periodTo: input.to,
